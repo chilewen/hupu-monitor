@@ -5,16 +5,16 @@
   },
   "user_configs": [
     {
-      "user_id": "20829162237257",
       "thread_id": "636748637",
       "current_page": 22,
-      "is_first_run": true
+      "is_first_run": true,
+      "user_euid": "20829162237257"
     },
     {
-      "user_id": "197319743786161",
       "thread_id": "636748637",
       "current_page": 2,
-      "is_first_run": true
+      "is_first_run": true,
+      "user_euid": "197319743786161"
     }
   ]
 }
