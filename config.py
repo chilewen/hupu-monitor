@@ -5,6 +5,11 @@ import os
 BARK_KEY = os.getenv("BARK_KEY", "你的Bark Key")  # 替换为你的Bark Key，或在GitHub Secrets中配置
 BARK_URL = f"https://api.day.app/{BARK_KEY}/"
 
+# 最大页数限制（避免页数无限递增）
+MAX_PAGE_LIMIT = 50
+# 保存调试文件的目录
+HTML_SAVE_DIR = "hupu_html"
+
 # 监控的用户列表（支持多个用户）
 # 格式：{"user_id": 用户ID, "thread_id": 帖子ID, "current_page": 初始页数, "is_first_run": 是否首次运行}
 MONITOR_USERS = [
