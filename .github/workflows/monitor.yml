@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 拉取代码
-        uses: chilewen/checkout@v4  # 替换为你复刻后的checkout
+        uses: actions/checkout@v4  # 改回官方Action
 
       - name: 设置Python环境
-        uses: chilewen/setup-python@v5  # 替换为你复刻后的setup-python
+        uses: actions/setup-python@v5  # 改回官方Action
         with:
           python-version: '3.10'
 
@@ -26,14 +26,14 @@ jobs:
         run: |
           pwd
           ls -la
-          mkdir -p /home/runner/work/hupu-monitor/hupu-monitor/hupu_html  # 手动创建目录
+          mkdir -p /home/runner/work/hupu-monitor/hupu-monitor/hupu_html
 
       - name: 运行监控脚本
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
         run: |
           python monitor.py
-          ls -la  # 打印运行后文件列表
+          ls -la
 
       - name: 提交状态文件
         run: |
