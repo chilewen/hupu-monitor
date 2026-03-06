@@ -11,7 +11,7 @@ MONITOR_USERS = [
     {
         "user_id": "20829162237257",
         "thread_id": "636748637",
-        "current_page": 22,
+        "current_page": 21,
         "is_first_run": True
     }
 ]
