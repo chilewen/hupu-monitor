@@ -38,10 +38,15 @@ REQUEST_HEADERS = {
 
 # ==================== 核心工具函数 ====================
 def load_status():
-    """加载已推送状态（避免重复推送）"""
+    """加载已推送状态（增加字段兼容逻辑）"""
     try:
         with open(STATUS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            status = json.load(f)
+            # 兼容旧的user_id字段 → 新的user_euid字段
+            for user_config in status.get("user_configs", []):
+                if "user_id" in user_config and "user_euid" not in user_config:
+                    user_config["user_euid"] = user_config.pop("user_id")
+            return status
     except (FileNotFoundError, json.JSONDecodeError):
         return {
             "pushed_items": {},  # 格式：{user_euid: {pid: 1}}
@@ -176,10 +181,15 @@ def parse_replies(replies, target_euid):
 
 def monitor_single_user(user_config, status):
     """监控单个用户的回复"""
-    target_euid = user_config["user_euid"]
+    # 兼容旧字段：优先取user_euid，没有则取user_id
+    target_euid = user_config.get("user_euid") or user_config.get("user_id", "")
     thread_id = user_config["thread_id"]
     current_page = user_config["current_page"]
     is_first_run = user_config["is_first_run"]
+    
+    if not target_euid:
+        print(f"❌ 用户配置缺少euid，跳过监控")
+        return
     
     # 加载已推送的pid
     pushed_pids = status["pushed_items"].get(target_euid, {})
