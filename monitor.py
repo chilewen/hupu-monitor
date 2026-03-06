@@ -35,10 +35,14 @@ def save_status(status):
 def fetch_hupu_post(user_id, thread_id, page):
     """爬取虎扑帖子内容"""
     url = f"https://bbs.hupu.com/{thread_id}_{user_id}-{page}.html"
+    print(f"\n=== 开始爬取：用户{user_id} 帖子{thread_id} 第{page}页 ===")
+    print(f"请求URL：{url}")
     try:
         response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         response.raise_for_status()  # 抛出HTTP错误
         response.encoding = "utf-8"
+        print(f"爬取成功，响应状态码：{response.status_code}")
+        print(f"页面内容前2000字符：\n{response.text[:2000]}")  # 打印前2000字符，避免内容过长
         return response.text
     except requests.exceptions.RequestException as e:
         print(f"爬取失败（用户ID：{user_id}，页数：{page}）：{str(e)}")
@@ -49,27 +53,35 @@ def parse_post_content(html, user_id):
     from bs4 import BeautifulSoup  # 延迟导入，避免未安装报错
     soup = BeautifulSoup(html, "html.parser")
     
+    print(f"\n=== 开始解析用户{user_id}的内容 ===")
     # 定位楼层内容（虎扑帖子的楼层class可能会变，需根据实际调整）
     floors = soup.find_all("div", class_="floor-box")  # 核心楼层容器
-    items = []
+    print(f"找到的总楼层数：{len(floors)}")
     
-    for floor in floors:
+    items = []
+    # 打印所有楼层的原始信息（方便调试）
+    for idx, floor in enumerate(floors):
+        print(f"\n--- 楼层{idx+1}原始信息 ---")
         # 提取楼层ID（唯一标识，避免重复推送）
         floor_id = floor.get("data-floor", "")
-        if not floor_id:
-            continue
+        print(f"楼层ID：{floor_id}")
         
         # 提取发布时间
         time_elem = floor.find("span", class_="floor-time")
         floor_time = time_elem.get_text(strip=True) if time_elem else "未知时间"
+        print(f"发布时间：{floor_time}")
         
         # 提取内容
         content_elem = floor.find("div", class_="floor-content")
         floor_content = content_elem.get_text(strip=True) if content_elem else "无内容"
+        print(f"楼层内容：{floor_content[:500]}")  # 只打印前500字符
         
         # 提取用户名（验证是否是目标用户）
         author_elem = floor.find("a", class_="u-name")
         author_id = author_elem.get("data-userid", "") if author_elem else ""
+        author_name = author_elem.get_text(strip=True) if author_elem else "未知用户"
+        print(f"发帖用户ID：{author_id}，用户名：{author_name}")
+        print(f"目标用户ID：{user_id}，是否匹配：{author_id == user_id}")
         
         # 只保留目标用户的内容
         if author_id == user_id:
@@ -80,6 +92,7 @@ def parse_post_content(html, user_id):
                 "user_id": user_id
             })
     
+    print(f"\n解析完成：目标用户{user_id}的有效楼层数：{len(items)}")
     return items
 
 def send_bark_notification(title, content):
@@ -112,6 +125,9 @@ def monitor_single_user(user_config, status):
     
     # 加载已推送的楼层ID
     pushed_floors = status["pushed_items"].get(user_id, {})
+    print(f"\n=== 监控用户{user_id} ===")
+    print(f"当前页数：{current_page}，首次运行：{is_first_run}")
+    print(f"已推送的楼层ID：{list(pushed_floors.keys())}")
     
     # 爬取当前页内容
     html = fetch_hupu_post(user_id, thread_id, current_page)
@@ -121,13 +137,15 @@ def monitor_single_user(user_config, status):
     # 解析内容
     items = parse_post_content(html, user_id)
     if not items:
-        print(f"用户{user_id}第{current_page}页无新内容")
+        print(f"用户{user_id}第{current_page}页无目标用户内容")
         # 尝试下一页（自动刷新页数）
         user_config["current_page"] += 1
         return
     
     # 筛选未推送的内容
     new_items = [item for item in items if item["floor_id"] not in pushed_floors]
+    print(f"未推送的新内容数：{len(new_items)}")
+    
     if not new_items:
         print(f"用户{user_id}第{current_page}页无未推送内容，尝试下一页")
         user_config["current_page"] += 1
@@ -172,7 +190,7 @@ def main():
     
     # 保存状态
     save_status(status)
-    print(f"监控结束：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"\n监控结束：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     main()
