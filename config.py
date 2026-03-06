@@ -10,7 +10,7 @@ MONITOR_USERS = [
     {
         "user_id": "20829162237257",
         "thread_id": "636748637",
-        "current_page": 22,  # 改回初始页数22
+        "current_page": 21,  # 改回初始页数22
         "is_first_run": True
     },
     {
