@@ -60,7 +60,11 @@ def fetch_and_print_full_html(user_id, thread_id, page_num):
             page.wait_for_timeout(3000)
             
             # 获取完整HTML
-            full_html = page.content()
+            # 替换原有的 full_html = page.content()
+            # 改为：提取<body>标签的实时innerHTML（和浏览器Elements面板一致）
+            full_html = page.evaluate("() => document.body.innerHTML")
+            # 补充：也可以提取整个document的实时HTML
+            # full_html = page.evaluate("() => document.documentElement.outerHTML")
             print(f"✅ 页面加载完成，总字符数：{len(full_html)}")
             print(f"\n=====================================")
             print(f"完整HTML内容开始（无截断）：")
