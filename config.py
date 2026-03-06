@@ -15,12 +15,12 @@ MONITOR_USERS = [
         "is_first_run": True  # 首次运行标记，执行后会自动改为False
     },
     # 可添加更多用户
-    # {
-    #     "user_id": "另一个用户ID",
-    #     "thread_id": "对应帖子ID",
-    #     "current_page": 1,
-    #     "is_first_run": True
-    # }
+    {
+        "user_id": "197319743786161",
+        "thread_id": "636748637",
+        "current_page": 1,
+        "is_first_run": True
+    }
 ]
 
 # 状态文件路径（记录已推送的内容，避免重复）
