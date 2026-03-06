@@ -10,30 +10,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 拉取代码
-        uses: actions/checkout@v4  # 改回官方Action
+        uses: actions/checkout@v4
 
       - name: 设置Python环境
-        uses: actions/setup-python@v5  # 改回官方Action
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 安装依赖
+      - name: 安装系统依赖（Playwright需要）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev
+
+      - name: 安装Python依赖
         run: |
           python -m pip install --upgrade pip
-          pip install requests
-
-      - name: 打印工作目录（调试）
-        run: |
-          pwd
-          ls -la
-          mkdir -p /home/runner/work/hupu-monitor/hupu-monitor/hupu_html
+          pip install playwright requests
+          playwright install chromium  # 安装Chromium浏览器
 
       - name: 运行监控脚本
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
-        run: |
-          python monitor.py
-          ls -la
+        run: python monitor.py
 
       - name: 提交状态文件
         run: |
