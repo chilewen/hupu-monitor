@@ -1,28 +1,36 @@
-name: 虎扑数据提取
+name: 虎扑回复监控
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'  # 每30分钟运行一次
+  workflow_dispatch:  # 手动触发
 
 jobs:
-  extract:
+  monitor:
     runs-on: ubuntu-latest
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
-
-      - name: 安装curl（Ubuntu）
-        run: sudo apt-get update && sudo apt-get install -y curl
 
       - name: 设置Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 运行提取脚本
-        run: python hupu_extract.py
+      - name: 安装依赖
+        run: pip install requests
 
-      - name: 上传HTML文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: hupu-html
-          path: curl_exact_html.html
+      - name: 运行监控脚本
+        env:
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+        run: python monitor.py
+
+      - name: 提交状态文件
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add hupu_status.json || echo "无状态文件更新"
+          git commit -m "更新监控状态: $(date +'%Y-%m-%d %H:%M:%S')" || echo "无更新需要提交"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
