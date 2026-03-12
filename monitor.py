@@ -5,10 +5,6 @@ import os
 from datetime import datetime
 
 # ==================== 全局配置 ====================
-BARK_KEY = os.getenv("BARK_KEY", "")
-STATUS_FILE = "hupu_status.json"
-
-# 目标配置
 TARGET_CONFIG = {
     "user_euid": "20829162237257",
     "thread_id": "636748637",
@@ -113,14 +109,14 @@ def fix_replies_json(replies_str):
 def extract_replies_data(html):
     """提取并解析replies数据"""
     if not html:
-        return None
+        return None, None
     
     # 提取__NEXT_DATA__标签内容
     next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
     next_data_match = re.search(next_data_pattern, html, re.DOTALL)
     
     if not next_data_match:
-        return None
+        return None, None
     
     next_data_str = next_data_match.group(1).strip()
     
@@ -129,7 +125,7 @@ def extract_replies_data(html):
     replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
     
     if not replies_match:
-        return None
+        return None, None
     
     try:
         # 获取并修复replies JSON
@@ -138,7 +134,30 @@ def extract_replies_data(html):
         
         # 解析replies数据
         replies_data = json.loads(fixed_replies_str)
+        
+        # 打印完整的replies数据信息
+        print("="*80)
+        print("📋 完整的replies数据信息：")
+        print("="*80)
+        print(f"基础信息：")
+        print(f"  - 总回复数(count): {replies_data.get('count', '未知')}")
+        print(f"  - 每页条数(size): {replies_data.get('size', '未知')}")
+        print(f"  - 当前页码(current): {replies_data.get('current', '未知')}")
+        print(f"  - 总页数(total): {replies_data.get('total', '未知')}")
+        print(f"  - 当前页回复数(list长度): {len(replies_data.get('list', []))}")
+        
+        print("\n📝 当前页所有回复列表（前5条预览）：")
         reply_list = replies_data.get("list", [])
+        for i, reply in enumerate(reply_list[:5]):  # 只打印前5条避免输出过长
+            print(f"\n  回复 {i+1}:")
+            print(f"    PID: {reply.get('pid', '未知')}")
+            print(f"    作者: {reply.get('author', {}).get('puname', '未知')} (euid: {reply.get('author', {}).get('euid', '未知')})")
+            print(f"    时间: {reply.get('createdAtFormat', '未知')}")
+            clean_content = clean_html_tags(reply.get('content', ''))
+            print(f"    内容: {clean_content[:100]}..." if len(clean_content) > 100 else f"    内容: {clean_content}")
+        
+        if len(reply_list) > 5:
+            print(f"\n    ... 还有 {len(reply_list) - 5} 条回复未显示")
         
         # 筛选目标euid的回复
         target_euid = TARGET_CONFIG["user_euid"]
@@ -184,7 +203,7 @@ def extract_replies_data(html):
             except Exception:
                 continue
         
-        return target_replies
+        return replies_data, target_replies
         
     except Exception:
         # 尝试直接提取list中的回复项
@@ -194,6 +213,11 @@ def extract_replies_data(html):
         if list_match:
             list_str = list_match.group(1)
             reply_items = re.findall(r'\{[^{}]*"pid"\s*:\s*"[^"]+"[^}]*"author"\s*:\s*\{[^}]*"euid"\s*:\s*"[^"]+"[^}]*\}[^}]*\}', list_str)
+            
+            print("="*80)
+            print("📋 提取到的回复数据（手动解析）：")
+            print("="*80)
+            print(f"  - 提取到回复条数: {len(reply_items)}")
             
             target_replies = []
             for item_str in reply_items:
@@ -210,8 +234,8 @@ def extract_replies_data(html):
                     quote_author = quote.get("author", {})
                     quote_euid = quote_author.get("euid", "")
                     
-                    if main_euid == target_euid or quote_euid == target_euid:
-                        if main_euid == target_euid:
+                    if main_euid == TARGET_CONFIG["user_euid"] or quote_euid == TARGET_CONFIG["user_euid"]:
+                        if main_euid == TARGET_CONFIG["user_euid"]:
                             author_info = main_author
                             content = reply.get("content", "")
                             reply_type = "主回复"
@@ -226,7 +250,7 @@ def extract_replies_data(html):
                         
                         target_replies.append({
                             "pid": reply.get("pid", ""),
-                            "euid": target_euid,
+                            "euid": TARGET_CONFIG["user_euid"],
                             "username": author_info.get("puname", ""),
                             "time": create_time,
                             "content": clean_content,
@@ -235,21 +259,31 @@ def extract_replies_data(html):
                 except Exception:
                     continue
             
-            return target_replies
+            return None, target_replies
     
-    return None
+    return None, None
 
 # ==================== 主函数 ====================
 def main():
+    print("🚀 开始提取虎扑回复数据...\n")
+    
     # 1. 获取HTML内容
     html = run_curl_and_get_html()
     
-    # 2. 提取replies数据
-    target_replies = extract_replies_data(html)
+    if not html:
+        print("❌ 未能获取到HTML内容")
+        return
     
-    # 3. 输出结果
+    # 2. 提取replies数据和目标回复
+    replies_data, target_replies = extract_replies_data(html)
+    
+    # 3. 输出目标回复结果
+    print("\n" + "="*80)
+    print(f"🎯 目标euid({TARGET_CONFIG['user_euid']})的回复筛选结果：")
+    print("="*80)
+    
     if target_replies and len(target_replies) > 0:
-        print(f"\n🎯 匹配到目标euid({TARGET_CONFIG['user_euid']})的回复数：{len(target_replies)}")
+        print(f"✅ 找到 {len(target_replies)} 条匹配的回复：")
         for idx, reply in enumerate(target_replies):
             print(f"\n--- 回复 {idx+1} ({reply['reply_type']}) ---")
             print(f"PID: {reply['pid']}")
@@ -263,8 +297,14 @@ def main():
         with open("target_replies.json", "w", encoding="utf-8") as f:
             json.dump(target_replies, f, ensure_ascii=False, indent=2)
         print(f"\n✅ 目标回复已保存到：target_replies.json")
+        
+        # 如果有完整的replies数据，也保存下来
+        if replies_data:
+            with open("full_replies_data.json", "w", encoding="utf-8") as f:
+                json.dump(replies_data, f, ensure_ascii=False, indent=2)
+            print(f"✅ 完整的replies数据已保存到：full_replies_data.json")
     else:
-        print(f"\n❌ 未找到目标euid的回复数据")
+        print(f"❌ 未找到目标euid的回复数据")
 
 if __name__ == "__main__":
     main()
