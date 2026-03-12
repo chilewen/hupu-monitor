@@ -5,6 +5,7 @@ import os
 import time
 import requests
 from datetime import datetime
+import shutil
 
 # ==================== 多帖子多用户配置 ====================
 MONITOR_TARGETS = [
@@ -20,50 +21,83 @@ MONITOR_TARGETS = [
     }
 ]
 
-# 通用配置
+# 通用配置（双重缓存路径：tmp + 工作目录）
 CONFIG = {
     "bark_key": os.environ.get("BARK_KEY", ""),
-    "cache_file": "/tmp/hupu_monitor_cache.json"
+    "cache_file_tmp": "/tmp/hupu_monitor_cache.json",
+    "cache_file_workdir": "./hupu_monitor_cache.json"  # 工作目录备份
 }
 
-# ==================== 缓存管理（记录首次运行时间+已推送ID） ====================
+# ==================== 缓存管理（双重备份 + 强制保存） ====================
 def load_cache():
-    """加载缓存：首次运行时间 + 已推送ID"""
+    """加载缓存：优先读tmp，其次读工作目录，最后默认值"""
     default_cache = {
-        "first_run_time": None,  # 首次运行时间戳
-        "pushed_pids": [],       # 已推送的回复ID
-        "last_check_pages": {}   # 每个目标最后检查到的页数
+        "first_run_time": None,
+        "pushed_pids": [],
+        "last_check_pages": {}
     }
     
-    if os.path.exists(CONFIG["cache_file"]):
+    # 优先级1：读取tmp目录缓存
+    if os.path.exists(CONFIG["cache_file_tmp"]):
         try:
-            with open(CONFIG["cache_file"], "r", encoding="utf-8") as f:
+            with open(CONFIG["cache_file_tmp"], "r", encoding="utf-8") as f:
                 cache = json.load(f)
-            # 补充缺失字段
-            for key, value in default_cache.items():
-                if key not in cache:
-                    cache[key] = value
+            # 验证缓存完整性
+            if "first_run_time" in cache and "pushed_pids" in cache:
+                print(f"✅ 从/tmp加载缓存 | 首次运行时间: {cache['first_run_time']} | 已推送: {len(cache['pushed_pids'])}")
+                return cache
+        except Exception as e:
+            print(f"⚠️ /tmp缓存损坏: {e}")
+    
+    # 优先级2：读取工作目录备份缓存
+    if os.path.exists(CONFIG["cache_file_workdir"]):
+        try:
+            with open(CONFIG["cache_file_workdir"], "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            print(f"✅ 从工作目录加载缓存 | 首次运行时间: {cache['first_run_time']} | 已推送: {len(cache['pushed_pids'])}")
             return cache
-        except:
-            return default_cache
+        except Exception as e:
+            print(f"⚠️ 工作目录缓存损坏: {e}")
+    
+    # 优先级3：默认缓存
+    print("⚠️ 无有效缓存，使用默认值（首次运行）")
     return default_cache
 
 def save_cache(cache):
-    """保存缓存"""
+    """保存缓存：同时写入tmp + 工作目录（双重备份）"""
+    # 1. 写入tmp目录（供cache action读取）
     try:
-        with open(CONFIG["cache_file"], "w", encoding="utf-8") as f:
+        with open(CONFIG["cache_file_tmp"], "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False, indent=2)
-        print(f"✅ 缓存保存成功 | 已推送ID数: {len(cache['pushed_pids'])}")
+        # 验证写入结果
+        if os.path.exists(CONFIG["cache_file_tmp"]):
+            file_size = os.path.getsize(CONFIG["cache_file_tmp"])
+            print(f"✅ /tmp缓存保存成功 | 大小: {file_size} 字节")
+        else:
+            print("❌ /tmp缓存写入失败")
     except Exception as e:
-        print(f"❌ 缓存保存失败: {e}")
+        print(f"❌ /tmp缓存保存失败: {e}")
+    
+    # 2. 写入工作目录（备份，防止cache action失效）
+    try:
+        with open(CONFIG["cache_file_workdir"], "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        print(f"✅ 工作目录缓存备份成功")
+        # 将备份文件加入git（可选，确保跨运行保留）
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            subprocess.run(["git", "add", CONFIG["cache_file_workdir"]], capture_output=True)
+            subprocess.run(["git", "commit", "-m", "Update hupu monitor cache"], capture_output=True)
+            subprocess.run(["git", "push", "origin", "main"], capture_output=True)
+            print(f"✅ 缓存文件已提交到Git仓库")
+    except Exception as e:
+        print(f"⚠️ 工作目录缓存备份失败: {e}")
 
-# ==================== 时间处理（判断是否是新回复） ====================
+# ==================== 时间处理 ====================
 def parse_reply_time(time_str):
     """解析回复时间字符串为时间戳"""
     if not time_str:
         return 0
     
-    # 虎扑时间格式：X分钟前、X小时前、今天 X:XX、昨天 X:XX
     now = time.time()
     minute_pattern = re.search(r'(\d+)分钟前', time_str)
     hour_pattern = re.search(r'(\d+)小时前', time_str)
@@ -75,7 +109,6 @@ def parse_reply_time(time_str):
         hours = int(hour_pattern.group(1))
         return now - hours * 3600
     elif "今天" in time_str:
-        # 今天 X:XX → 转换为今天的时间戳
         time_part = time_str.replace("今天", "").strip()
         try:
             today = datetime.now().strftime("%Y-%m-%d")
@@ -84,7 +117,6 @@ def parse_reply_time(time_str):
         except:
             return 0
     elif "昨天" in time_str:
-        # 昨天 X:XX → 转换为昨天的时间戳
         time_part = time_str.replace("昨天", "").strip()
         try:
             yesterday = (datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -98,8 +130,7 @@ def parse_reply_time(time_str):
 def is_new_reply(reply_time_ts, first_run_ts):
     """判断是否是首次运行后的新回复"""
     if not first_run_ts:
-        return True  # 首次运行时所有回复都算新的
-    # 回复时间在首次运行时间之后 → 新回复
+        return True
     return reply_time_ts > first_run_ts
 
 # ==================== 内容清理 ====================
@@ -107,9 +138,9 @@ def clean_content(content):
     """彻底移除HTML标签和特殊字符"""
     if not content:
         return "无内容"
-    content = re.sub(r'<[^>]+>', '', content)       # 移除HTML标签
-    content = re.sub(r'\\u003c.*?\\u003e', '', content)  # 移除Unicode编码标签
-    content = re.sub(r'https?://\S+', '', content)  # 移除URL
+    content = re.sub(r'<[^>]+>', '', content)
+    content = re.sub(r'\\u003c.*?\\u003e', '', content)
+    content = re.sub(r'https?://\S+', '', content)
     content = content.replace('\\', '').replace('"', '').replace("'", "")
     content = re.sub(r'\s+', ' ', content).strip()
     return content if content else "无内容"
@@ -118,13 +149,11 @@ def clean_content(content):
 def extract_replies(html):
     """提取回复数据"""
     try:
-        # 提取NEXT_DATA
         match = re.search(r'<script id="__NEXT_DATA__".*?>(.*?)</script>', html, re.DOTALL)
         if match:
             data = json.loads(match.group(1))
             replies = data.get("props", {}).get("pageProps", {}).get("detail", {}).get("replies")
             if replies and isinstance(replies, dict):
-                # 处理回复列表
                 clean_list = []
                 for item in replies.get("list", []):
                     clean_item = {
@@ -139,7 +168,6 @@ def extract_replies(html):
     except:
         pass
 
-    # 降级正则提取
     try:
         replies_match = re.search(r'"replies"\s*:\s*({.*?"list"\s*:\s*\[.*?\].*?})', html, re.DOTALL)
         if not replies_match:
@@ -152,7 +180,6 @@ def extract_replies(html):
             "list": []
         }
         
-        # 提取分页信息
         current_match = re.search(r'"current"\s*:\s*(\d+)', raw)
         total_match = re.search(r'"total"\s*:\s*(\d+)', raw)
         if current_match:
@@ -160,7 +187,6 @@ def extract_replies(html):
         if total_match:
             result["total"] = int(total_match.group(1))
         
-        # 提取回复列表
         list_items = re.findall(r'\{.*?"pid"\s*:\s*"[^"]+".*?\}', raw)
         for item in list_items:
             pid = re.search(r'"pid"\s*:\s*"([^"]+)"', item)
@@ -207,7 +233,6 @@ def monitor_target(target, cache):
     print(f"🔍 帖子ID: {thread_id}")
     print(f"{'='*50}")
     
-    # 1. 获取首页数据（总页数）
     cmd = f'''curl 'https://bbs.hupu.com/{thread_id}_{euid}-1.html' \
       -H 'User-Agent: Mozilla/5.0' --silent --show-error'''
     try:
@@ -222,18 +247,20 @@ def monitor_target(target, cache):
             print("ℹ️ 暂无回复")
             return
         
-        first_run = cache["first_run_time"] is None
+        # 强制验证首次运行状态（关键修复）
+        first_run = cache["first_run_time"] is None or cache["first_run_time"] == ""
         print(f"📊 总页数: {total_pages} | 首次运行: {first_run}")
+        print(f"📝 已推送ID数: {len(cache['pushed_pids'])}")
+        if not first_run:
+            print(f"⏰ 首次运行时间: {datetime.fromtimestamp(cache['first_run_time']).strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # 2. 首次运行初始化
         new_replies = []
         if first_run:
             print("\n🔹 首次运行：记录初始状态 + 推送最后3条")
-            # 记录首次运行时间（当前时间）
-            cache["first_run_time"] = time.time()
-            print(f"⏰ 首次运行时间: {datetime.fromtimestamp(cache['first_run_time']).strftime('%Y-%m-%d %H:%M:%S')}")
+            # 强制设置首次运行时间（当前时间戳，确保是数字）
+            cache["first_run_time"] = float(time.time())
+            print(f"⏰ 首次运行时间已记录: {datetime.fromtimestamp(cache['first_run_time']).strftime('%Y-%m-%d %H:%M:%S')}")
             
-            # 获取最后一页数据
             last_page_cmd = f'''curl 'https://bbs.hupu.com/{thread_id}_{euid}-{total_pages}.html' \
               -H 'User-Agent: Mozilla/5.0' --silent --show-error'''
             last_page_html = subprocess.run(last_page_cmd, shell=True, capture_output=True, text=True, timeout=20).stdout
@@ -241,38 +268,34 @@ def monitor_target(target, cache):
             
             if last_page_replies and last_page_replies.get("list"):
                 reply_list = last_page_replies["list"]
-                # 取最后3条作为初始推送
                 init_replies = reply_list[-3:] if len(reply_list) >= 3 else reply_list
                 
                 for reply in reversed(init_replies):
                     pid = reply.get("pid")
                     if not pid or pid in cache["pushed_pids"]:
                         continue
-                    # 推送初始回复
                     push_title = f"【{name}】初始回复"
                     push_content = f"{reply['createdAtFormat']}\n{reply['content']}"
                     print(f"\n📤 推送初始回复:")
                     print(f"   时间: {reply['createdAtFormat']}")
                     print(f"   内容: {reply['content']}")
                     push_bark(push_title, push_content)
-                    # 记录已推送
                     cache["pushed_pids"].append(pid)
             
-            # 记录最后检查页数
             cache["last_check_pages"][target_key] = total_pages
+            # 立即保存缓存（首次运行后强制保存）
+            save_cache(cache)
             return
         
-        # 3. 非首次运行：只检查新增页数 + 新时间回复
+        # 非首次运行逻辑
         print("\n🔹 常规监控：只检查新回复")
         last_checked_page = cache["last_check_pages"].get(target_key, total_pages)
-        # 只检查新增的页数（当前总页数 - 上次检查页数）
         pages_to_check = range(total_pages, last_checked_page, -1)
         
         if not pages_to_check:
             print("ℹ️ 无新增页数，检查最后一页是否有新回复")
             pages_to_check = [total_pages]
         
-        # 遍历需要检查的页数
         for page_num in pages_to_check:
             print(f"\n📄 检查新增页数: {page_num}")
             page_cmd = f'''curl 'https://bbs.hupu.com/{thread_id}_{euid}-{page_num}.html' \
@@ -283,21 +306,16 @@ def monitor_target(target, cache):
             if not page_replies or not page_replies.get("list"):
                 continue
             
-            # 筛选：1. 未推送过 2. 首次运行后发布的
             for reply in page_replies["list"]:
                 pid = reply.get("pid")
                 if not pid:
                     continue
-                # 条件1：未推送过
                 if pid in cache["pushed_pids"]:
                     continue
-                # 条件2：是首次运行后的新回复
                 if not is_new_reply(reply["time_ts"], cache["first_run_time"]):
                     continue
-                # 符合条件的新回复
                 new_replies.append(reply)
         
-        # 推送新回复
         if new_replies:
             print(f"\n✅ 发现 {len(new_replies)} 条新回复（首次运行后发布）")
             for reply in new_replies:
@@ -308,19 +326,18 @@ def monitor_target(target, cache):
                 print(f"   时间: {reply['createdAtFormat']}")
                 print(f"   内容: {reply['content']}")
                 push_bark(push_title, push_content)
-                # 记录已推送
                 cache["pushed_pids"].append(pid)
                 time.sleep(0.5)
         else:
             print("\n✅ 无首次运行后的新回复")
         
-        # 更新最后检查页数
         cache["last_check_pages"][target_key] = total_pages
         
     except Exception as e:
         print(f"❌ 监控失败: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # 去重已推送ID
     cache["pushed_pids"] = list(set(cache["pushed_pids"]))
 
 # ==================== 主程序 ====================
@@ -329,6 +346,7 @@ def main():
     print(f"\n🚀 虎扑新回复监控启动")
     print(f"⏰ 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🎯 监控目标数: {len(MONITOR_TARGETS)}")
+    print(f"💻 GitHub Actions环境: {os.environ.get('GITHUB_ACTIONS', 'false')}")
     
     # 加载缓存
     cache = load_cache()
@@ -337,14 +355,16 @@ def main():
     for target in MONITOR_TARGETS:
         monitor_target(target, cache)
     
-    # 保存缓存
+    # 最终保存缓存
     save_cache(cache)
     
     # 最终统计
     print(f"\n{'='*50}")
     print(f"🎉 监控完成")
     print(f"📊 累计推送: {len(cache['pushed_pids'])} 条")
-    print(f"⏰ 首次运行时间: {datetime.fromtimestamp(cache['first_run_time']).strftime('%Y-%m-%d %H:%M:%S') if cache['first_run_time'] else '未初始化'}")
+    first_run = cache["first_run_time"] is None or cache["first_run_time"] == ""
+    if not first_run:
+        print(f"⏰ 首次运行时间: {datetime.fromtimestamp(cache['first_run_time']).strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*50}")
 
 if __name__ == "__main__":
