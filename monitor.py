@@ -81,6 +81,56 @@ def run_curl_and_get_html():
         print(f"❌ 执行curl出错：{str(e)}")
         return None
 
+def fix_replies_json(replies_str):
+    """修复replies JSON字符串的语法错误"""
+    if not replies_str:
+        return replies_str
+    
+    print(f"\n🔧 修复JSON语法错误...")
+    
+    # 1. 修复开头/结尾的多余大括号
+    replies_str = replies_str.strip()
+    # 移除开头多余的{
+    while replies_str.startswith('{') and replies_str[1:2] == '{':
+        replies_str = replies_str[1:]
+    # 移除结尾多余的}
+    while replies_str.endswith('}') and replies_str[-2:-1] == '}':
+        replies_str = replies_str[:-1]
+    
+    # 2. 确保JSON以{开头，以}结尾
+    if not replies_str.startswith('{'):
+        replies_str = '{' + replies_str
+    if not replies_str.endswith('}'):
+        replies_str = replies_str + '}'
+    
+    # 3. 修复属性名没有双引号的问题
+    # 匹配没有双引号的属性名（如 count:450 → "count":450）
+    pattern = r'([{,]\s*)([a-zA-Z0-9_]+)\s*:'
+    def add_quotes(match):
+        return f'{match.group(1)}"{match.group(2)}":'
+    replies_str = re.sub(pattern, add_quotes, replies_str)
+    
+    # 4. 修复字符串没有双引号的问题
+    # 匹配冒号后没有双引号的值（数字/布尔值除外）
+    replies_str = re.sub(r':\s*([^\d\.\-truefalse{[\],}\s]+)(?=[,\}\]])', r':"\1"', replies_str)
+    
+    # 5. 修复转义问题
+    replies_str = replies_str.replace(r'\u003c', '<')
+    replies_str = replies_str.replace(r'\u003e', '>')
+    replies_str = replies_str.replace(r'\\', '\\')
+    replies_str = replies_str.replace(r'\"', '"')
+    
+    # 6. 移除控制字符
+    replies_str = re.sub(r'[\n\r\t]', '', replies_str)
+    
+    # 7. 修复多余的逗号
+    replies_str = re.sub(r',\s*}', '}', replies_str)
+    replies_str = re.sub(r',\s*]', ']', replies_str)
+    
+    print(f"✅ JSON修复完成，开头前50字符：{replies_str[:50]}")
+    
+    return replies_str
+
 def extract_replies_by_regex(html):
     """直接使用正则提取replies数据（绕过完整JSON解析）"""
     if not html:
@@ -101,43 +151,34 @@ def extract_replies_by_regex(html):
     
     next_data_str = next_data_match.group(1).strip()
     
-    # 第二步：直接提取replies完整数据块（关键修复）
-    # 匹配 "replies": { ... } 完整结构（包含count/size/current/total/list）
+    # 第二步：直接提取replies完整数据块
     replies_pattern = r'"replies"\s*:\s*({[^}]*?"count"\s*:\s*\d+[^}]*?"size"\s*:\s*\d+[^}]*?"current"\s*:\s*\d+[^}]*?"total"\s*:\s*\d+[^}]*?"list"\s*:\s*\[(.*?)\]\s*[^}]*})'
     replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
     
     if not replies_match:
         print(f"❌ 未匹配到replies数据块")
-        # 保存next_data用于调试
         with open("next_data_for_debug.json", "w", encoding="utf-8") as f:
             f.write(next_data_str)
         print(f"✅ __NEXT_DATA__已保存到：next_data_for_debug.json")
         return None
     
     try:
-        # 获取replies字符串并修复格式
+        # 获取replies字符串
         replies_str = replies_match.group(1)
-        # 包裹成合法JSON
-        replies_str = "{" + replies_str + "}"
         
-        # 修复常见格式问题
-        replies_str = replies_str.replace(r'\u003c', '<')
-        replies_str = replies_str.replace(r'\u003e', '>')
-        replies_str = replies_str.replace(r'\\"', '"')
-        replies_str = replies_str.replace(r'\\/', '/')
-        # 移除控制字符
-        replies_str = re.sub(r'[\n\r\t]', '', replies_str)
-        # 修复多余的逗号
-        replies_str = re.sub(r',\s*}', '}', replies_str)
-        replies_str = re.sub(r',\s*]', ']', replies_str)
+        # 修复JSON语法错误
+        fixed_replies_str = fix_replies_json(replies_str)
         
-        # 保存修复后的replies数据
+        # 保存修复前后的对比
         with open("replies_raw.json", "w", encoding="utf-8") as f:
             f.write(replies_str)
+        with open("replies_fixed.json", "w", encoding="utf-8") as f:
+            f.write(fixed_replies_str)
         print(f"✅ 原始replies数据已保存到：replies_raw.json")
+        print(f"✅ 修复后的replies数据已保存到：replies_fixed.json")
         
         # 解析replies数据
-        replies_data = json.loads(replies_str)
+        replies_data = json.loads(fixed_replies_str)
         print(f"✅ 成功解析replies数据！")
         
         # 打印replies基础信息
@@ -154,23 +195,13 @@ def extract_replies_by_regex(html):
         
         for reply in reply_list:
             try:
-                # 处理可能的字符串类型的字典
-                if isinstance(reply, str):
-                    reply = json.loads(reply.replace("'", '"'))
-                
                 # 检查主回复作者euid
                 main_author = reply.get("author", {})
-                if isinstance(main_author, str):
-                    main_author = json.loads(main_author.replace("'", '"'))
                 main_euid = main_author.get("euid", "")
                 
                 # 检查引用回复作者euid
                 quote = reply.get("quote", {})
-                if isinstance(quote, str):
-                    quote = json.loads(quote.replace("'", '"'))
                 quote_author = quote.get("author", {})
-                if isinstance(quote_author, str):
-                    quote_author = json.loads(quote_author.replace("'", '"'))
                 quote_euid = quote_author.get("euid", "")
                 
                 # 收集目标回复
@@ -225,11 +256,76 @@ def extract_replies_by_regex(html):
         
     except json.JSONDecodeError as e:
         print(f"❌ 解析replies JSON失败：{str(e)}")
-        # 保存错误位置信息
+        # 打印详细的错误信息
         error_pos = e.pos
         context_start = max(0, error_pos - 100)
-        context_end = min(len(replies_str), error_pos + 100)
-        print(f"📌 错误位置上下文：\n{replies_str[context_start:context_end]}")
+        context_end = min(len(fixed_replies_str), error_pos + 100)
+        print(f"📌 错误位置（{error_pos}）上下文：\n{fixed_replies_str[context_start:context_end]}")
+        
+        # 尝试手动解析list数据（终极方案）
+        print(f"\n🔧 尝试手动提取list数据...")
+        list_pattern = r'"list"\s*:\s*\[(.*?)\]\s*,'
+        list_match = re.search(list_pattern, fixed_replies_str, re.DOTALL)
+        if list_match:
+            list_str = list_match.group(1)
+            # 分割回复项
+            reply_items = re.findall(r'\{[^{}]*"pid"\s*:\s*"[^"]+"[^}]*\}', list_str)
+            print(f"✅ 手动提取到{len(reply_items)}条回复")
+            
+            target_replies = []
+            for item_str in reply_items:
+                try:
+                    # 修复单条回复的JSON
+                    item_str = '{' + item_str + '}'
+                    item_str = fix_replies_json(item_str)
+                    reply = json.loads(item_str)
+                    
+                    # 检查euid
+                    main_author = reply.get("author", {})
+                    main_euid = main_author.get("euid", "")
+                    quote = reply.get("quote", {})
+                    quote_author = quote.get("author", {})
+                    quote_euid = quote_author.get("euid", "")
+                    
+                    if main_euid == target_euid or quote_euid == target_euid:
+                        # 提取信息
+                        if main_euid == target_euid:
+                            author_info = main_author
+                            content = reply.get("content", "")
+                            reply_type = "主回复"
+                            create_time = reply.get("createdAtFormat", "")
+                        else:
+                            author_info = quote_author
+                            content = quote.get("content", "")
+                            reply_type = "引用回复"
+                            create_time = quote.get("createdAtFormat", "")
+                        
+                        content = re.sub(r'<.*?>', '', content)
+                        content = bytes(content, 'utf-8').decode('unicode_escape', errors='ignore')
+                        
+                        target_replies.append({
+                            "pid": reply.get("pid", ""),
+                            "euid": target_euid,
+                            "username": author_info.get("puname", ""),
+                            "time": create_time,
+                            "content": content.strip(),
+                            "reply_type": reply_type
+                        })
+                except:
+                    continue
+            
+            print(f"\n🎯 手动提取匹配到目标euid的回复数：{len(target_replies)}")
+            for idx, reply in enumerate(target_replies):
+                print(f"\n--- 回复 {idx+1} ({reply['reply_type']}) ---")
+                print(f"PID: {reply['pid']}")
+                print(f"用户: {reply['username']}")
+                print(f"时间: {reply['time']}")
+                print(f"内容: {reply['content'][:200]}...")
+            
+            with open("target_replies_manual.json", "w", encoding="utf-8") as f:
+                json.dump(target_replies, f, ensure_ascii=False, indent=2)
+            print(f"\n✅ 手动提取的回复已保存到：target_replies_manual.json")
+        
         return None
     except Exception as e:
         print(f"❌ 处理replies数据失败：{str(e)}")
