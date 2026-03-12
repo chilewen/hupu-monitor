@@ -81,6 +81,38 @@ def run_curl_and_get_html():
         print(f"❌ 执行curl出错：{str(e)}")
         return None
 
+def fix_json_string(json_str):
+    """修复虎扑返回的不规范JSON字符串"""
+    if not json_str:
+        return json_str
+    
+    # 1. 处理常见的转义问题
+    fixes = [
+        (r'\u003c', '<'),          # 替换HTML标签转义
+        (r'\u003e', '>'),
+        (r'\u0026', '&'),
+        (r'\u0027', "'"),
+        (r'\u0022', '"'),
+        (r'\\n', '\\n'),           # 保留换行符转义
+        (r'\\r', '\\r'),
+        (r'\\t', '\\t'),
+        (r'\"', '"'),              # 修复双引号转义
+        (r"'", "\""),              # 单引号转双引号
+        (r'(?<!\\)"(?!:|,|}|])', '\\"'),  # 未转义的双引号添加转义
+    ]
+    
+    for old, new in fixes:
+        json_str = json_str.replace(old, new)
+    
+    # 2. 移除控制字符（换行、回车等）
+    json_str = re.sub(r'[\x00-\x1f\x7f]', '', json_str)
+    
+    # 3. 修复不规则的逗号（比如}]前的逗号）
+    json_str = re.sub(r',\s*}', '}', json_str)
+    json_str = re.sub(r',\s*]', ']', json_str)
+    
+    return json_str
+
 def extract_replies_from_html(html):
     """从HTML中提取__NEXT_DATA__中的replies数据（核心）"""
     if not html:
@@ -109,11 +141,49 @@ def extract_replies_from_html(html):
     try:
         # 获取JSON字符串并清理
         json_str = match.group(1).strip()
-        # 修复可能的转义问题
-        json_str = json_str.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\\', '\\')
         
-        # 解析JSON数据
-        next_data = json.loads(json_str)
+        # 保存原始JSON字符串用于调试
+        with open("next_data_original.json", "w", encoding="utf-8") as f:
+            f.write(json_str)
+        print(f"✅ 原始__NEXT_DATA__已保存到：next_data_original.json")
+        
+        # 修复JSON字符串
+        fixed_json_str = fix_json_string(json_str)
+        
+        # 保存修复后的JSON字符串
+        with open("next_data_fixed.json", "w", encoding="utf-8") as f:
+            f.write(fixed_json_str)
+        print(f"✅ 修复后的__NEXT_DATA__已保存到：next_data_fixed.json")
+        
+        # 尝试解析JSON数据（带容错）
+        try:
+            next_data = json.loads(fixed_json_str)
+        except json.JSONDecodeError as e:
+            # 尝试使用更宽松的解析方式
+            print(f"⚠️ 标准JSON解析失败，尝试使用容错解析...")
+            # 使用正则分段提取replies部分
+            replies_pattern = r'"replies"\s*:\s*({.*?"list"\s*:\s*\[(.*?)\]\s*})'
+            replies_match = re.search(replies_pattern, fixed_json_str, re.DOTALL)
+            if replies_match:
+                try:
+                    replies_str = "{" + replies_match.group(1) + "}"
+                    replies_data = json.loads(replies_str)
+                    print(f"✅ 成功从JSON片段中提取replies数据")
+                except:
+                    print(f"❌ 容错解析也失败了")
+                    print(f"📌 解析错误位置详情：")
+                    error_pos = e.pos
+                    # 打印错误位置前后各100字符
+                    start = max(0, error_pos - 100)
+                    end = min(len(fixed_json_str), error_pos + 100)
+                    context = fixed_json_str[start:end]
+                    print(f"错误位置（{error_pos}）上下文：\n{context}")
+                    print(f"\n📌 完整错误信息：{e}")
+                    return None
+            else:
+                print(f"❌ 无法提取replies片段，解析失败")
+                print(f"📌 完整错误信息：{e}")
+                return None
         
         # 按路径提取replies数据：props.pageProps.detail.replies
         try:
@@ -122,6 +192,10 @@ def extract_replies_from_html(html):
             page_props = props.get("pageProps", {})
             detail = page_props.get("detail", {})
             replies_data = detail.get("replies", {})
+            
+            # 如果上面没拿到，直接从修复的JSON字符串中提取replies
+            if not replies_data and 'replies_data' in locals():
+                replies_data = replies_data
             
             if not replies_data:
                 print(f"❌ 在__NEXT_DATA__中未找到props.pageProps.detail.replies")
@@ -167,7 +241,7 @@ def extract_replies_from_html(html):
                     # 清理HTML标签
                     content = re.sub(r'<.*?>', '', content)
                     # 处理Unicode转义
-                    content = content.encode('utf-8').decode('unicode_escape')
+                    content = bytes(content, 'utf-8').decode('unicode_escape')
                     
                     target_replies.append({
                         "pid": reply.get("pid", ""),
@@ -200,14 +274,17 @@ def extract_replies_from_html(html):
             
         except Exception as e:
             print(f"❌ 提取replies路径失败：{str(e)}")
+            import traceback
+            traceback.print_exc()
             # 打印完整的__NEXT_DATA__结构（前1000字符）
             print(f"\n📌 __NEXT_DATA__结构预览：")
             print(json.dumps(next_data, ensure_ascii=False, indent=2)[:1000] + "...")
             return None
             
-    except json.JSONDecodeError as e:
-        print(f"❌ 解析__NEXT_DATA__ JSON失败：{str(e)}")
-        print(f"📌 原始JSON字符串前500字符：{json_str[:500]}...")
+    except Exception as e:
+        print(f"❌ 处理__NEXT_DATA__时发生未知错误：{str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # ==================== 主函数 ====================
