@@ -33,6 +33,7 @@ CURL_COMMAND = f'''curl 'https://bbs.hupu.com/{TARGET_CONFIG["thread_id"]}_{TARG
 def run_curl_and_get_html():
     """调用本地curl命令，获取HTML内容"""
     try:
+        print(f"🔍 正在请求URL: https://bbs.hupu.com/{TARGET_CONFIG['thread_id']}_{TARGET_CONFIG['user_euid']}-{TARGET_CONFIG['page_num']}.html")
         # 执行curl命令
         result = subprocess.run(
             CURL_COMMAND,
@@ -45,8 +46,10 @@ def run_curl_and_get_html():
         
         # 获取HTML内容
         full_html = result.stdout
+        print(f"✅ 成功获取HTML内容，长度: {len(full_html)} 字符")
         return full_html
-    except Exception:
+    except Exception as e:
+        print(f"❌ 获取HTML失败: {str(e)}")
         return None
 
 def clean_html_tags(content):
@@ -108,35 +111,68 @@ def fix_replies_json(replies_str):
 
 def extract_replies_data(html):
     """提取并解析replies数据"""
+    # 首先打印基础信息
+    print("\n" + "="*80)
+    print("📊 数据提取过程详情：")
+    print("="*80)
+    
     if not html:
+        print("❌ HTML内容为空")
         return None, None
     
     # 提取__NEXT_DATA__标签内容
+    print("🔍 正在查找__NEXT_DATA__标签...")
     next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
     next_data_match = re.search(next_data_pattern, html, re.DOTALL)
     
     if not next_data_match:
+        print("❌ 未找到__NEXT_DATA__标签")
+        # 保存HTML内容用于调试
+        with open("debug_html.html", "w", encoding="utf-8") as f:
+            f.write(html[:5000])  # 只保存前5000字符
+        print("ℹ️ HTML内容已保存到debug_html.html（前5000字符）")
         return None, None
     
     next_data_str = next_data_match.group(1).strip()
+    print(f"✅ 找到__NEXT_DATA__标签，内容长度: {len(next_data_str)} 字符")
+    
+    # 打印__NEXT_DATA__的前500字符预览
+    print(f"📝 __NEXT_DATA__内容预览（前500字符）：")
+    print(f"{next_data_str[:500]}...")
     
     # 提取replies数据块
+    print("\n🔍 正在提取replies数据块...")
     replies_pattern = r'"replies"\s*:\s*({[^}]*?"count"\s*:\s*\d+[^}]*?"size"\s*:\s*\d+[^}]*?"current"\s*:\s*\d+[^}]*?"total"\s*:\s*\d+[^}]*?"list"\s*:\s*\[(.*?)\]\s*[^}]*})'
     replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
     
     if not replies_match:
+        print("❌ 未匹配到replies数据块")
+        # 尝试简单匹配
+        simple_replies_pattern = r'"replies"\s*:\s*(\{.*?\})'
+        simple_replies_match = re.search(simple_replies_pattern, next_data_str, re.DOTALL)
+        if simple_replies_match:
+            print("⚠️ 找到简单的replies结构：")
+            simple_replies_str = simple_replies_match.group(1)[:300]
+            print(f"{simple_replies_str}...")
         return None, None
     
     try:
         # 获取并修复replies JSON
         replies_str = replies_match.group(1)
+        print(f"✅ 提取到replies数据块，长度: {len(replies_str)} 字符")
+        
+        # 打印replies数据块的前300字符
+        print(f"📝 replies数据块预览（前300字符）：")
+        print(f"{replies_str[:300]}...")
+        
         fixed_replies_str = fix_replies_json(replies_str)
         
         # 解析replies数据
+        print("🔧 正在解析replies JSON...")
         replies_data = json.loads(fixed_replies_str)
         
         # 打印完整的replies数据信息
-        print("="*80)
+        print("\n" + "="*80)
         print("📋 完整的replies数据信息：")
         print("="*80)
         print(f"基础信息：")
@@ -144,20 +180,21 @@ def extract_replies_data(html):
         print(f"  - 每页条数(size): {replies_data.get('size', '未知')}")
         print(f"  - 当前页码(current): {replies_data.get('current', '未知')}")
         print(f"  - 总页数(total): {replies_data.get('total', '未知')}")
-        print(f"  - 当前页回复数(list长度): {len(replies_data.get('list', []))}")
         
-        print("\n📝 当前页所有回复列表（前5条预览）：")
         reply_list = replies_data.get("list", [])
-        for i, reply in enumerate(reply_list[:5]):  # 只打印前5条避免输出过长
-            print(f"\n  回复 {i+1}:")
-            print(f"    PID: {reply.get('pid', '未知')}")
-            print(f"    作者: {reply.get('author', {}).get('puname', '未知')} (euid: {reply.get('author', {}).get('euid', '未知')})")
-            print(f"    时间: {reply.get('createdAtFormat', '未知')}")
-            clean_content = clean_html_tags(reply.get('content', ''))
-            print(f"    内容: {clean_content[:100]}..." if len(clean_content) > 100 else f"    内容: {clean_content}")
+        print(f"  - 当前页回复数(list长度): {len(reply_list)}")
         
-        if len(reply_list) > 5:
-            print(f"\n    ... 还有 {len(reply_list) - 5} 条回复未显示")
+        print("\n📝 当前页所有回复列表：")
+        if len(reply_list) > 0:
+            for i, reply in enumerate(reply_list):
+                print(f"\n  回复 {i+1}:")
+                print(f"    PID: {reply.get('pid', '未知')}")
+                print(f"    作者: {reply.get('author', {}).get('puname', '未知')} (euid: {reply.get('author', {}).get('euid', '未知')})")
+                print(f"    时间: {reply.get('createdAtFormat', '未知')}")
+                clean_content = clean_html_tags(reply.get('content', ''))
+                print(f"    内容: {clean_content[:100]}..." if len(clean_content) > 100 else f"    内容: {clean_content}")
+        else:
+            print("  📭 当前页没有回复数据")
         
         # 筛选目标euid的回复
         target_euid = TARGET_CONFIG["user_euid"]
@@ -200,24 +237,40 @@ def extract_replies_data(html):
                         "location": reply.get("location", "")
                     })
                     
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ 解析单条回复失败: {str(e)}")
                 continue
         
         return replies_data, target_replies
         
-    except Exception:
-        # 尝试直接提取list中的回复项
+    except Exception as e:
+        print(f"❌ 解析replies JSON失败: {str(e)}")
+        
+        # 手动解析分支也打印详细信息
+        print("\n🔧 尝试手动提取回复数据...")
         list_pattern = r'"list"\s*:\s*\[(.*?)\]\s*,'
         list_match = re.search(list_pattern, next_data_str, re.DOTALL)
+        
+        print("\n" + "="*80)
+        print("📋 手动解析回复数据：")
+        print("="*80)
         
         if list_match:
             list_str = list_match.group(1)
             reply_items = re.findall(r'\{[^{}]*"pid"\s*:\s*"[^"]+"[^}]*"author"\s*:\s*\{[^}]*"euid"\s*:\s*"[^"]+"[^}]*\}[^}]*\}', list_str)
             
-            print("="*80)
-            print("📋 提取到的回复数据（手动解析）：")
-            print("="*80)
-            print(f"  - 提取到回复条数: {len(reply_items)}")
+            print(f"📊 手动提取统计：")
+            print(f"  - list原始内容长度: {len(list_str)} 字符")
+            print(f"  - 提取到回复项数量: {len(reply_items)}")
+            
+            if len(reply_items) > 0:
+                print(f"\n📝 提取到的回复项预览（前3条）：")
+                for i, item in enumerate(reply_items[:3]):
+                    print(f"\n  回复项 {i+1}:")
+                    print(f"    {item[:200]}...")
+            else:
+                print(f"\n📝 list内容：")
+                print(f"  {list_str[:500]}...")
             
             target_replies = []
             for item_str in reply_items:
@@ -256,23 +309,21 @@ def extract_replies_data(html):
                             "content": clean_content,
                             "reply_type": reply_type
                         })
-                except Exception:
+                except Exception as e:
+                    print(f"⚠️ 解析回复项失败: {str(e)}")
                     continue
             
             return None, target_replies
-    
-    return None, None
+        else:
+            print("❌ 未找到list数据")
+            return None, None
 
 # ==================== 主函数 ====================
 def main():
-    print("🚀 开始提取虎扑回复数据...\n")
+    print("🚀 开始提取虎扑回复数据...")
     
     # 1. 获取HTML内容
     html = run_curl_and_get_html()
-    
-    if not html:
-        print("❌ 未能获取到HTML内容")
-        return
     
     # 2. 提取replies数据和目标回复
     replies_data, target_replies = extract_replies_data(html)
@@ -305,6 +356,13 @@ def main():
             print(f"✅ 完整的replies数据已保存到：full_replies_data.json")
     else:
         print(f"❌ 未找到目标euid的回复数据")
+        
+        # 额外提示
+        print("\n💡 可能的原因：")
+        print("  1. 该页面确实没有该用户的回复")
+        print("  2. EUID配置错误")
+        print("  3. 页面结构发生变化")
+        print("  4. 正则表达式匹配失败")
 
 if __name__ == "__main__":
     main()
