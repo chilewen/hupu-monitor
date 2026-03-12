@@ -2,7 +2,6 @@ import json
 import re
 import subprocess
 import os
-from datetime import datetime
 
 # ==================== 全局配置 ====================
 TARGET_CONFIG = {
@@ -11,7 +10,7 @@ TARGET_CONFIG = {
     "page_num": 21
 }
 
-# 你的curl命令
+# curl命令（保持不变）
 CURL_COMMAND = f'''curl 'https://bbs.hupu.com/{TARGET_CONFIG["thread_id"]}_{TARGET_CONFIG["user_euid"]}-{TARGET_CONFIG["page_num"]}.html' \
   -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
   -H 'accept-language: zh-CN,zh;q=0.9,en;q=0.8' \
@@ -29,12 +28,9 @@ CURL_COMMAND = f'''curl 'https://bbs.hupu.com/{TARGET_CONFIG["thread_id"]}_{TARG
   -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36' \
   --silent --show-error'''
 
-# ==================== 核心函数 ====================
 def run_curl_and_get_html():
-    """调用本地curl命令，获取HTML内容"""
+    """获取HTML内容"""
     try:
-        print(f"🔍 正在请求URL: https://bbs.hupu.com/{TARGET_CONFIG['thread_id']}_{TARGET_CONFIG['user_euid']}-{TARGET_CONFIG['page_num']}.html")
-        # 执行curl命令
         result = subprocess.run(
             CURL_COMMAND,
             shell=True,
@@ -43,326 +39,155 @@ def run_curl_and_get_html():
             stderr=subprocess.PIPE,
             encoding="utf-8"
         )
-        
-        # 获取HTML内容
-        full_html = result.stdout
-        print(f"✅ 成功获取HTML内容，长度: {len(full_html)} 字符")
-        return full_html
-    except Exception as e:
-        print(f"❌ 获取HTML失败: {str(e)}")
+        return result.stdout
+    except Exception:
         return None
 
 def clean_html_tags(content):
-    """清理所有HTML标签，包括p、img、div等"""
+    """清理HTML标签"""
     if not content:
         return ""
-    
-    # 移除所有HTML标签
     content = re.sub(r'<[^>]+>', '', content)
-    
-    # 移除HTML实体编码
-    content = content.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-    
-    # 处理Unicode转义
+    content = content.replace("&nbsp;", " ").replace("&amp;", "&")
     content = bytes(content, 'utf-8').decode('unicode_escape', errors='ignore')
-    
-    # 清理多余的空格和换行
     content = re.sub(r'\s+', ' ', content).strip()
-    
     return content
 
-def fix_replies_json(replies_str):
-    """修复replies JSON字符串的语法错误"""
+def fix_special_char_json(replies_str):
+    """
+    修复包含特殊字符的JSON字符串
+    重点处理content字段中的URL特殊字符
+    """
     if not replies_str:
         return replies_str
     
-    # 修复开头/结尾的多余大括号
+    # 1. 修复开头/结尾多余大括号
     replies_str = replies_str.strip()
     while replies_str.startswith('{') and replies_str[1:2] == '{':
         replies_str = replies_str[1:]
     while replies_str.endswith('}') and replies_str[-2:-1] == '}':
         replies_str = replies_str[:-1]
     
-    # 确保JSON格式正确
-    if not replies_str.startswith('{'):
-        replies_str = '{' + replies_str
-    if not replies_str.endswith('}'):
-        replies_str = replies_str + '}'
+    # 2. 关键修复：处理content字段中的特殊字符
+    # 匹配 "content":"..." 格式的字段，保留引号内的内容
+    content_pattern = r'("content"\s*:\s*")(.*?)("(?:,|\s*}|]))'
+    def fix_content(match):
+        key = match.group(1)
+        content = match.group(2)
+        end = match.group(3)
+        
+        # 对content内容进行转义处理
+        # 转义双引号、反斜杠等特殊字符
+        content = content.replace('\\', '\\\\')  # 反斜杠转义
+        content = content.replace('"', '\\"')    # 双引号转义
+        content = content.replace('\n', '\\n')  # 换行符转义
+        content = content.replace('\r', '\\r')  # 回车符转义
+        
+        return f"{key}{content}{end}"
     
-    # 修复属性名没有双引号的问题
+    # 修复所有content字段
+    replies_str = re.sub(content_pattern, fix_content, replies_str, flags=re.DOTALL)
+    
+    # 3. 修复其他JSON语法问题
+    # 确保属性名有双引号
     pattern = r'([{,]\s*)([a-zA-Z0-9_]+)\s*:'
     def add_quotes(match):
         return f'{match.group(1)}"{match.group(2)}":'
     replies_str = re.sub(pattern, add_quotes, replies_str)
     
-    # 修复字符串没有双引号的问题
-    replies_str = re.sub(r':\s*([^\d\.\-truefalse{[\],}\s]+)(?=[,\}\]])', r':"\1"', replies_str)
-    
-    # 修复转义问题
+    # 4. 修复Unicode编码
     replies_str = replies_str.replace(r'\u003c', '<').replace(r'\u003e', '>')
-    replies_str = replies_str.replace(r'\"', '"').replace(r'\\', '\\')
     
-    # 移除控制字符和多余逗号
+    # 5. 移除控制字符和多余逗号
     replies_str = re.sub(r'[\n\r\t]', '', replies_str)
     replies_str = re.sub(r',\s*}', '}', replies_str)
     replies_str = re.sub(r',\s*]', ']', replies_str)
     
+    # 6. 确保JSON格式完整
+    if not replies_str.startswith('{'):
+        replies_str = '{' + replies_str
+    if not replies_str.endswith('}'):
+        replies_str = replies_str + '}'
+    
     return replies_str
 
-def extract_replies_data(html):
-    """提取并解析replies数据"""
-    # 首先打印基础信息
-    print("\n" + "="*80)
-    print("📊 数据提取过程详情：")
-    print("="*80)
-    
+def extract_and_parse_replies():
+    """核心提取解析函数"""
+    # 1. 获取HTML
+    html = run_curl_and_get_html()
     if not html:
-        print("❌ HTML内容为空")
-        return None, None
+        print("❌ 获取HTML失败")
+        return
     
-    # 提取__NEXT_DATA__标签内容
-    print("🔍 正在查找__NEXT_DATA__标签...")
+    # 2. 提取__NEXT_DATA__
     next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
     next_data_match = re.search(next_data_pattern, html, re.DOTALL)
-    
     if not next_data_match:
-        print("❌ 未找到__NEXT_DATA__标签")
-        # 保存HTML内容用于调试
-        with open("debug_html.html", "w", encoding="utf-8") as f:
-            f.write(html[:5000])  # 只保存前5000字符
-        print("ℹ️ HTML内容已保存到debug_html.html（前5000字符）")
-        return None, None
+        print("❌ 未找到__NEXT_DATA__")
+        return
     
     next_data_str = next_data_match.group(1).strip()
-    print(f"✅ 找到__NEXT_DATA__标签，内容长度: {len(next_data_str)} 字符")
     
-    # 打印__NEXT_DATA__的前500字符预览
-    print(f"📝 __NEXT_DATA__内容预览（前500字符）：")
-    print(f"{next_data_str[:500]}...")
-    
-    # 提取replies数据块
-    print("\n🔍 正在提取replies数据块...")
+    # 3. 提取replies数据块
     replies_pattern = r'"replies"\s*:\s*({[^}]*?"count"\s*:\s*\d+[^}]*?"size"\s*:\s*\d+[^}]*?"current"\s*:\s*\d+[^}]*?"total"\s*:\s*\d+[^}]*?"list"\s*:\s*\[(.*?)\]\s*[^}]*})'
     replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
-    
     if not replies_match:
-        print("❌ 未匹配到replies数据块")
-        # 尝试简单匹配
-        simple_replies_pattern = r'"replies"\s*:\s*(\{.*?\})'
-        simple_replies_match = re.search(simple_replies_pattern, next_data_str, re.DOTALL)
-        if simple_replies_match:
-            print("⚠️ 找到简单的replies结构：")
-            simple_replies_str = simple_replies_match.group(1)[:300]
-            print(f"{simple_replies_str}...")
-        return None, None
+        print("❌ 未提取到replies数据块")
+        return
+    
+    replies_str = replies_match.group(1)
+    print(f"📌 原始replies数据（出错位置附近）：")
+    print(replies_str[150:170])  # 打印第161列附近的内容
+    
+    # 4. 修复并解析JSON（关键修复）
+    fixed_replies_str = fix_special_char_json(replies_str)
     
     try:
-        # 获取并修复replies JSON
-        replies_str = replies_match.group(1)
-        print(f"✅ 提取到replies数据块，长度: {len(replies_str)} 字符")
-        
-        # 打印replies数据块的前300字符
-        print(f"📝 replies数据块预览（前300字符）：")
-        print(f"{replies_str[:300]}...")
-        
-        fixed_replies_str = fix_replies_json(replies_str)
-        
-        # 解析replies数据
-        print("🔧 正在解析replies JSON...")
+        # 解析修复后的JSON
         replies_data = json.loads(fixed_replies_str)
+        print("\n✅ JSON解析成功！")
         
-        # 打印完整的replies数据信息
-        print("\n" + "="*80)
-        print("📋 完整的replies数据信息：")
-        print("="*80)
-        print(f"基础信息：")
-        print(f"  - 总回复数(count): {replies_data.get('count', '未知')}")
-        print(f"  - 每页条数(size): {replies_data.get('size', '未知')}")
-        print(f"  - 当前页码(current): {replies_data.get('current', '未知')}")
-        print(f"  - 总页数(total): {replies_data.get('total', '未知')}")
+        # 打印完整的replies数据
+        print("\n" + "="*50)
+        print("📋 完整的replies数据：")
+        print("="*50)
+        print(json.dumps(replies_data, ensure_ascii=False, indent=2))
         
+        # 提取list中的回复并打印
         reply_list = replies_data.get("list", [])
-        print(f"  - 当前页回复数(list长度): {len(reply_list)}")
+        print(f"\n📊 共提取到 {len(reply_list)} 条回复：")
         
-        print("\n📝 当前页所有回复列表：")
-        if len(reply_list) > 0:
-            for i, reply in enumerate(reply_list):
-                print(f"\n  回复 {i+1}:")
-                print(f"    PID: {reply.get('pid', '未知')}")
-                print(f"    作者: {reply.get('author', {}).get('puname', '未知')} (euid: {reply.get('author', {}).get('euid', '未知')})")
-                print(f"    时间: {reply.get('createdAtFormat', '未知')}")
-                clean_content = clean_html_tags(reply.get('content', ''))
-                print(f"    内容: {clean_content[:100]}..." if len(clean_content) > 100 else f"    内容: {clean_content}")
-        else:
-            print("  📭 当前页没有回复数据")
-        
-        # 筛选目标euid的回复
-        target_euid = TARGET_CONFIG["user_euid"]
-        target_replies = []
-        
-        for reply in reply_list:
-            try:
-                # 检查主回复作者euid
-                main_author = reply.get("author", {})
-                main_euid = main_author.get("euid", "")
-                
-                # 检查引用回复作者euid
-                quote = reply.get("quote", {})
-                quote_author = quote.get("author", {})
-                quote_euid = quote_author.get("euid", "")
-                
-                # 收集目标回复
-                if main_euid == target_euid or quote_euid == target_euid:
-                    if main_euid == target_euid:
-                        author_info = main_author
-                        content = reply.get("content", "")
-                        reply_type = "主回复"
-                        create_time = reply.get("createdAtFormat", "")
-                    else:
-                        author_info = quote_author
-                        content = quote.get("content", "")
-                        reply_type = "引用回复"
-                        create_time = quote.get("createdAtFormat", "")
-                    
-                    # 清理HTML标签
-                    clean_content = clean_html_tags(content)
-                    
-                    target_replies.append({
-                        "pid": reply.get("pid", ""),
-                        "euid": target_euid,
-                        "username": author_info.get("puname", ""),
-                        "time": create_time,
-                        "content": clean_content,
-                        "reply_type": reply_type,
-                        "location": reply.get("location", "")
-                    })
-                    
-            except Exception as e:
-                print(f"⚠️ 解析单条回复失败: {str(e)}")
-                continue
-        
-        return replies_data, target_replies
-        
-    except Exception as e:
-        print(f"❌ 解析replies JSON失败: {str(e)}")
-        
-        # 手动解析分支也打印详细信息
-        print("\n🔧 尝试手动提取回复数据...")
-        list_pattern = r'"list"\s*:\s*\[(.*?)\]\s*,'
-        list_match = re.search(list_pattern, next_data_str, re.DOTALL)
-        
-        print("\n" + "="*80)
-        print("📋 手动解析回复数据：")
-        print("="*80)
-        
-        if list_match:
-            list_str = list_match.group(1)
-            reply_items = re.findall(r'\{[^{}]*"pid"\s*:\s*"[^"]+"[^}]*"author"\s*:\s*\{[^}]*"euid"\s*:\s*"[^"]+"[^}]*\}[^}]*\}', list_str)
+        for i, reply in enumerate(reply_list):
+            print(f"\n--- 回复 {i+1} ---")
+            print(f"PID: {reply.get('pid', '未知')}")
+            print(f"作者EUID: {reply.get('author', {}).get('euid', '未知')}")
+            print(f"作者名称: {reply.get('author', {}).get('puname', '未知')}")
+            print(f"时间: {reply.get('createdAtFormat', '未知')}")
+            print(f"内容: {clean_html_tags(reply.get('content', ''))}")
             
-            print(f"📊 手动提取统计：")
-            print(f"  - list原始内容长度: {len(list_str)} 字符")
-            print(f"  - 提取到回复项数量: {len(reply_items)}")
-            
-            if len(reply_items) > 0:
-                print(f"\n📝 提取到的回复项预览（前3条）：")
-                for i, item in enumerate(reply_items[:3]):
-                    print(f"\n  回复项 {i+1}:")
-                    print(f"    {item[:200]}...")
-            else:
-                print(f"\n📝 list内容：")
-                print(f"  {list_str[:500]}...")
-            
-            target_replies = []
-            for item_str in reply_items:
-                try:
-                    # 修复并解析单条回复
-                    item_str = '{' + item_str + '}'
-                    item_str = fix_replies_json(item_str)
-                    reply = json.loads(item_str)
-                    
-                    # 检查euid
-                    main_author = reply.get("author", {})
-                    main_euid = main_author.get("euid", "")
-                    quote = reply.get("quote", {})
-                    quote_author = quote.get("author", {})
-                    quote_euid = quote_author.get("euid", "")
-                    
-                    if main_euid == TARGET_CONFIG["user_euid"] or quote_euid == TARGET_CONFIG["user_euid"]:
-                        if main_euid == TARGET_CONFIG["user_euid"]:
-                            author_info = main_author
-                            content = reply.get("content", "")
-                            reply_type = "主回复"
-                            create_time = reply.get("createdAtFormat", "")
-                        else:
-                            author_info = quote_author
-                            content = quote.get("content", "")
-                            reply_type = "引用回复"
-                            create_time = quote.get("createdAtFormat", "")
-                        
-                        clean_content = clean_html_tags(content)
-                        
-                        target_replies.append({
-                            "pid": reply.get("pid", ""),
-                            "euid": TARGET_CONFIG["user_euid"],
-                            "username": author_info.get("puname", ""),
-                            "time": create_time,
-                            "content": clean_content,
-                            "reply_type": reply_type
-                        })
-                except Exception as e:
-                    print(f"⚠️ 解析回复项失败: {str(e)}")
-                    continue
-            
-            return None, target_replies
-        else:
-            print("❌ 未找到list数据")
-            return None, None
-
-# ==================== 主函数 ====================
-def main():
-    print("🚀 开始提取虎扑回复数据...")
-    
-    # 1. 获取HTML内容
-    html = run_curl_and_get_html()
-    
-    # 2. 提取replies数据和目标回复
-    replies_data, target_replies = extract_replies_data(html)
-    
-    # 3. 输出目标回复结果
-    print("\n" + "="*80)
-    print(f"🎯 目标euid({TARGET_CONFIG['user_euid']})的回复筛选结果：")
-    print("="*80)
-    
-    if target_replies and len(target_replies) > 0:
-        print(f"✅ 找到 {len(target_replies)} 条匹配的回复：")
-        for idx, reply in enumerate(target_replies):
-            print(f"\n--- 回复 {idx+1} ({reply['reply_type']}) ---")
-            print(f"PID: {reply['pid']}")
-            print(f"用户: {reply['username']} ({reply['euid']})")
-            print(f"时间: {reply['time']}")
-            if 'location' in reply and reply['location']:
-                print(f"位置: {reply['location']}")
-            print(f"内容: {reply['content']}")
+            # 检查是否是目标EUID的回复
+            if reply.get('author', {}).get('euid', '') == TARGET_CONFIG['user_euid']:
+                print("🔹 👉 这是目标用户的回复！")
         
-        # 保存结果到文件
-        with open("target_replies.json", "w", encoding="utf-8") as f:
-            json.dump(target_replies, f, ensure_ascii=False, indent=2)
-        print(f"\n✅ 目标回复已保存到：target_replies.json")
+        # 筛选目标EUID的回复
+        target_replies = [
+            r for r in reply_list 
+            if r.get('author', {}).get('euid', '') == TARGET_CONFIG['user_euid']
+        ]
         
-        # 如果有完整的replies数据，也保存下来
-        if replies_data:
-            with open("full_replies_data.json", "w", encoding="utf-8") as f:
-                json.dump(replies_data, f, ensure_ascii=False, indent=2)
-            print(f"✅ 完整的replies数据已保存到：full_replies_data.json")
-    else:
-        print(f"❌ 未找到目标euid的回复数据")
+        print(f"\n🎯 找到 {len(target_replies)} 条目标EUID的回复")
         
-        # 额外提示
-        print("\n💡 可能的原因：")
-        print("  1. 该页面确实没有该用户的回复")
-        print("  2. EUID配置错误")
-        print("  3. 页面结构发生变化")
-        print("  4. 正则表达式匹配失败")
+    except json.JSONDecodeError as e:
+        print(f"\n❌ JSON解析失败详情：")
+        print(f"  错误类型: {type(e).__name__}")
+        print(f"  错误位置: line {e.lineno}, column {e.colno} (char {e.pos})")
+        print(f"  错误信息: {e.msg}")
+        print(f"  出错位置内容: {fixed_replies_str[e.pos-10:e.pos+10]}")
+        
+        # 保存修复后的JSON用于调试
+        with open("fixed_replies_debug.json", "w", encoding="utf-8") as f:
+            f.write(fixed_replies_str)
+        print("\n📄 修复后的JSON已保存到 fixed_replies_debug.json")
 
 if __name__ == "__main__":
-    main()
+    extract_and_parse_replies()
