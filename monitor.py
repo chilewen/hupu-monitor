@@ -40,52 +40,72 @@ def run_curl_and_get_html():
             encoding="utf-8"
         )
         return result.stdout
-    except Exception:
+    except Exception as e:
+        print(f"❌ 获取HTML失败: {e}")
         return None
 
 def ultra_strong_filter(raw_str):
-    """
-    超强过滤函数：彻底移除所有HTML标签、特殊字符和转义序列
-    确保JSON能够正常解析
-    """
+    """超强过滤函数"""
     if not raw_str:
         return ""
     
     # ========== 第一步：移除所有HTML相关内容 ==========
-    # 1. 移除Unicode编码的HTML标签 (\u003c = <, \u003e = >)
-    raw_str = re.sub(r'\\u003c[^\\]+\\u003e', '', raw_str)
-    # 2. 移除普通HTML标签
-    raw_str = re.sub(r'<[^>]+>', '', raw_str)
-    # 3. 移除所有img标签相关内容（包括URL）
-    raw_str = re.sub(r'<img[^>]*>', '', raw_str)
-    raw_str = re.sub(r'img\s+src\s*=\s*["\'][^"\']+["\']', '', raw_str)
+    raw_str = re.sub(r'\\u003c[^\\]+\\u003e', '', raw_str)  # Unicode HTML标签
+    raw_str = re.sub(r'<[^>]+>', '', raw_str)  # 普通HTML标签
+    raw_str = re.sub(r'img\s+src\s*=\s*["\'][^"\']+["\']', '', raw_str)  # img标签
     
-    # ========== 第二步：移除影响JSON解析的特殊字符 ==========
-    # 1. 移除所有反斜杠转义（除了必要的）
-    raw_str = raw_str.replace('\\', '')
-    # 2. 移除所有URL特殊字符
-    raw_str = re.sub(r'https?://[^"]+', '', raw_str)
-    # 3. 移除可能导致JSON错误的特殊字符
+    # ========== 第二步：移除所有特殊字符 ==========
+    raw_str = raw_str.replace('\\', '')  # 移除所有反斜杠
+    raw_str = re.sub(r'https?://[^"]+', '', raw_str)  # 移除URL
     raw_str = raw_str.replace('/', '').replace('=', '').replace('?', '')
     raw_str = raw_str.replace('&', '').replace('%', '').replace('+', '')
+    raw_str = raw_str.replace(';', '').replace(':', '').replace('*', '')
     
     # ========== 第三步：修复JSON语法 ==========
-    # 1. 确保双引号配对
-    quote_count = raw_str.count('"')
-    if quote_count % 2 != 0:
-        raw_str = raw_str.rstrip('"')  # 移除最后一个未配对的引号
-    
-    # 2. 移除行尾多余的逗号
     raw_str = re.sub(r',\s*}', '}', raw_str)
     raw_str = re.sub(r',\s*]', ']', raw_str)
-    
-    # 3. 修复属性名格式
     raw_str = re.sub(r'([{,]\s*)([a-zA-Z0-9_]+)\s*:', r'\1"\2":', raw_str)
+    
+    # 确保首尾是大括号
+    if not raw_str.startswith('{'):
+        raw_str = '{' + raw_str
+    if not raw_str.endswith('}'):
+        raw_str = raw_str + '}'
     
     return raw_str
 
-def extract_replies_with_strong_filter():
-    """使用强过滤提取并解析replies数据"""
+def print_char_by_char(s, error_pos=None):
+    """逐字符打印字符串，标记错误位置"""
+    print("\n" + "="*80)
+    print("📝 逐字符分析（字符位置 → 字符内容）：")
+    print("="*80)
+    
+    # 每20个字符一行
+    for i in range(0, len(s), 20):
+        line_chars = s[i:i+20]
+        line_str = ""
+        for j, c in enumerate(line_chars):
+            pos = i + j
+            # 标记错误位置
+            if error_pos is not None and pos == error_pos:
+                line_str += f"[{pos}:{repr(c)}] "  # 错误位置高亮
+            else:
+                line_str += f"{pos}:{repr(c)} "
+        
+        print(line_str.strip())
+    
+    if error_pos is not None:
+        print(f"\n🔴 错误位置 {error_pos} 附近内容：")
+        start = max(0, error_pos - 10)
+        end = min(len(s), error_pos + 10)
+        for pos in range(start, end):
+            if pos == error_pos:
+                print(f"[{pos}:{repr(s[pos])}] ← 错误位置")
+            else:
+                print(f"{pos}:{repr(s[pos])}")
+
+def extract_replies_with_full_debug():
+    """完整调试版本：打印所有内容"""
     # 1. 获取HTML内容
     html = run_curl_and_get_html()
     if not html:
@@ -99,84 +119,103 @@ def extract_replies_with_strong_filter():
         print("❌ 未找到__NEXT_DATA__标签")
         return
     
-    next_data_str = next_data_match.group(1).strip()
-    
     # 3. 提取replies数据块
     replies_pattern = r'"replies"\s*:\s*({[^}]*?"count"\s*:\s*\d+[^}]*?"size"\s*:\s*\d+[^}]*?"current"\s*:\s*\d+[^}]*?"total"\s*:\s*\d+[^}]*?"list"\s*:\s*\[(.*?)\]\s*[^}]*})'
-    replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
+    replies_match = re.search(replies_pattern, next_data_match.group(1), re.DOTALL)
     
     if not replies_match:
         print("❌ 未提取到replies数据块")
         return
     
-    # 4. 强过滤处理
+    # 4. 获取原始数据并打印全部
     raw_replies = replies_match.group(1)
-    print(f"📥 原始replies数据长度: {len(raw_replies)}")
+    print("📥 " + "="*80)
+    print("原始replies数据（全部）：")
+    print("="*80)
+    print(raw_replies)
+    print(f"\n📏 原始数据长度: {len(raw_replies)} 字符")
     
-    # 应用超强过滤
+    # 5. 强过滤处理并打印全部
     filtered_replies = ultra_strong_filter(raw_replies)
-    print(f"🧹 强过滤后数据长度: {len(filtered_replies)}")
+    print("\n🧹 " + "="*80)
+    print("强过滤后replies数据（全部）：")
+    print("="*80)
+    print(filtered_replies)
+    print(f"\n📏 过滤后数据长度: {len(filtered_replies)} 字符")
     
-    # 5. 解析处理后的JSON
+    # 6. 尝试解析JSON
     try:
         replies_data = json.loads(filtered_replies)
         print("\n✅ JSON解析成功！")
         
-        # 打印完整的replies数据
-        print("\n" + "="*60)
-        print("📋 强过滤后的完整replies数据：")
-        print("="*60)
+        # 打印解析结果
+        print("\n" + "="*80)
+        print("解析后的replies数据：")
+        print("="*80)
         print(json.dumps(replies_data, ensure_ascii=False, indent=2))
         
-        # 提取并打印所有回复
-        reply_list = replies_data.get("list", [])
-        print(f"\n📊 共提取到 {len(reply_list)} 条回复：")
-        
-        for i, reply in enumerate(reply_list):
-            print(f"\n--- 回复 {i+1} ---")
-            print(f"PID: {reply.get('pid', '未知')}")
-            print(f"作者ID: {reply.get('authorId', '未知')}")
-            print(f"作者EUID: {reply.get('author', {}).get('euid', '未知')}")
-            print(f"作者昵称: {reply.get('author', {}).get('puname', '未知')}")
-            print(f"发布时间: {reply.get('createdAtFormat', '未知')}")
-            print(f"纯文本内容: {reply.get('content', '无内容')}")
-            
-            # 标记目标用户回复
-            if reply.get('author', {}).get('euid', '') == TARGET_CONFIG['user_euid']:
-                print("🔴 【目标用户回复】")
-        
-        # 筛选目标用户回复
-        target_replies = [
-            r for r in reply_list 
-            if r.get('author', {}).get('euid', '') == TARGET_CONFIG['user_euid']
-        ]
-        
-        print(f"\n" + "="*60)
-        print(f"🎯 目标EUID({TARGET_CONFIG['user_euid']})的回复: {len(target_replies)} 条")
-        print("="*60)
-        
-        if target_replies:
-            for i, reply in enumerate(target_replies):
-                print(f"\n目标回复 {i+1}:")
-                print(f"内容: {reply.get('content', '无')}")
-        else:
-            print("❌ 未找到目标用户的回复")
-        
-        # 保存结果
-        with open("filtered_replies_result.json", "w", encoding="utf-8") as f:
-            json.dump({
-                "total_replies": len(reply_list),
-                "target_replies": target_replies,
-                "full_replies_data": replies_data
-            }, f, ensure_ascii=False, indent=2)
-        print("\n💾 结果已保存到 filtered_replies_result.json")
-        
     except json.JSONDecodeError as e:
-        print(f"\n❌ JSON解析失败: {e}")
-        # 保存过滤后的数据用于调试
-        with open("filtered_replies_debug.txt", "w", encoding="utf-8") as f:
-            f.write(filtered_replies)
-        print("📄 过滤后的数据已保存到 filtered_replies_debug.txt")
+        print(f"\n❌ JSON解析失败详情：")
+        print(f"  错误类型: {type(e).__name__}")
+        print(f"  错误位置: line {e.lineno}, column {e.colno} (char {e.pos})")
+        print(f"  错误信息: {e.msg}")
+        
+        # 逐字符打印并标记错误位置
+        print_char_by_char(filtered_replies, e.pos)
+        
+        # 保存所有调试信息
+        with open("debug_all_info.txt", "w", encoding="utf-8") as f:
+            f.write("=== 原始数据 ===\n")
+            f.write(raw_replies + "\n\n")
+            f.write("=== 过滤后数据 ===\n")
+            f.write(filtered_replies + "\n\n")
+            f.write(f"=== 错误信息 ===\n")
+            f.write(f"位置: char {e.pos}\n")
+            f.write(f"信息: {e.msg}\n")
+            f.write(f"错误位置内容: {filtered_replies[max(0,e.pos-10):e.pos+10]}\n")
+        
+        print("\n📄 所有调试信息已保存到 debug_all_info.txt")
+        
+        # ========== 终极方案：直接提取关键数据 ==========
+        print("\n💥 终极方案：不解析JSON，直接提取关键数据")
+        print("="*80)
+        
+        # 直接提取list中的回复
+        list_pattern = r'"list"\s*:\s*\[(.*?)\]\s*[,}]'
+        list_match = re.search(list_pattern, raw_replies, re.DOTALL)
+        
+        if list_match:
+            list_content = list_match.group(1)
+            
+            # 提取所有回复的PID
+            pids = re.findall(r'"pid"\s*:\s*"([^"]+)"', list_content)
+            # 提取所有作者EUID
+            euids = re.findall(r'"euid"\s*:\s*"([^"]+)"', list_content)
+            # 提取所有作者名称
+            names = re.findall(r'"puname"\s*:\s*"([^"]+)"', list_content)
+            # 提取所有内容（清理HTML）
+            contents = re.findall(r'"content"\s*:\s*"([^"]+)"', list_content)
+            clean_contents = [re.sub(r'<[^>]+>', '', c).replace('\\u003c', '').replace('\\u003e', '') for c in contents]
+            
+            print(f"📊 直接提取统计：")
+            print(f"  - 回复数量: {len(pids)}")
+            print(f"  - 所有EUID: {euids}")
+            print(f"  - 目标EUID: {TARGET_CONFIG['user_euid']}")
+            
+            # 匹配目标回复
+            target_indexes = [i for i, euid in enumerate(euids) if euid == TARGET_CONFIG['user_euid']]
+            
+            if target_indexes:
+                print(f"\n🎯 找到 {len(target_indexes)} 条目标回复：")
+                for idx in target_indexes:
+                    print(f"\n回复 {idx+1}:")
+                    print(f"  PID: {pids[idx] if idx < len(pids) else '未知'}")
+                    print(f"  作者: {names[idx] if idx < len(names) else '未知'}")
+                    print(f"  内容: {clean_contents[idx] if idx < len(clean_contents) else '未知'}")
+            else:
+                print(f"\n❌ 未找到目标EUID的回复")
+        else:
+            print("❌ 无法直接提取list数据")
 
 if __name__ == "__main__":
-    extract_replies_with_strong_filter()
+    extract_replies_with_full_debug()
