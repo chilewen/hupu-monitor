@@ -43,87 +43,60 @@ def run_curl_and_get_html():
     except Exception:
         return None
 
-def clean_html_tags(content):
-    """清理HTML标签"""
-    if not content:
+def ultra_strong_filter(raw_str):
+    """
+    超强过滤函数：彻底移除所有HTML标签、特殊字符和转义序列
+    确保JSON能够正常解析
+    """
+    if not raw_str:
         return ""
-    content = re.sub(r'<[^>]+>', '', content)
-    content = content.replace("&nbsp;", " ").replace("&amp;", "&")
-    content = bytes(content, 'utf-8').decode('unicode_escape', errors='ignore')
-    content = re.sub(r'\s+', ' ', content).strip()
-    return content
+    
+    # ========== 第一步：移除所有HTML相关内容 ==========
+    # 1. 移除Unicode编码的HTML标签 (\u003c = <, \u003e = >)
+    raw_str = re.sub(r'\\u003c[^\\]+\\u003e', '', raw_str)
+    # 2. 移除普通HTML标签
+    raw_str = re.sub(r'<[^>]+>', '', raw_str)
+    # 3. 移除所有img标签相关内容（包括URL）
+    raw_str = re.sub(r'<img[^>]*>', '', raw_str)
+    raw_str = re.sub(r'img\s+src\s*=\s*["\'][^"\']+["\']', '', raw_str)
+    
+    # ========== 第二步：移除影响JSON解析的特殊字符 ==========
+    # 1. 移除所有反斜杠转义（除了必要的）
+    raw_str = raw_str.replace('\\', '')
+    # 2. 移除所有URL特殊字符
+    raw_str = re.sub(r'https?://[^"]+', '', raw_str)
+    # 3. 移除可能导致JSON错误的特殊字符
+    raw_str = raw_str.replace('/', '').replace('=', '').replace('?', '')
+    raw_str = raw_str.replace('&', '').replace('%', '').replace('+', '')
+    
+    # ========== 第三步：修复JSON语法 ==========
+    # 1. 确保双引号配对
+    quote_count = raw_str.count('"')
+    if quote_count % 2 != 0:
+        raw_str = raw_str.rstrip('"')  # 移除最后一个未配对的引号
+    
+    # 2. 移除行尾多余的逗号
+    raw_str = re.sub(r',\s*}', '}', raw_str)
+    raw_str = re.sub(r',\s*]', ']', raw_str)
+    
+    # 3. 修复属性名格式
+    raw_str = re.sub(r'([{,]\s*)([a-zA-Z0-9_]+)\s*:', r'\1"\2":', raw_str)
+    
+    return raw_str
 
-def fix_special_char_json(replies_str):
-    """
-    修复包含特殊字符的JSON字符串
-    重点处理content字段中的URL特殊字符
-    """
-    if not replies_str:
-        return replies_str
-    
-    # 1. 修复开头/结尾多余大括号
-    replies_str = replies_str.strip()
-    while replies_str.startswith('{') and replies_str[1:2] == '{':
-        replies_str = replies_str[1:]
-    while replies_str.endswith('}') and replies_str[-2:-1] == '}':
-        replies_str = replies_str[:-1]
-    
-    # 2. 关键修复：处理content字段中的特殊字符
-    # 匹配 "content":"..." 格式的字段，保留引号内的内容
-    content_pattern = r'("content"\s*:\s*")(.*?)("(?:,|\s*}|]))'
-    def fix_content(match):
-        key = match.group(1)
-        content = match.group(2)
-        end = match.group(3)
-        
-        # 对content内容进行转义处理
-        # 转义双引号、反斜杠等特殊字符
-        content = content.replace('\\', '\\\\')  # 反斜杠转义
-        content = content.replace('"', '\\"')    # 双引号转义
-        content = content.replace('\n', '\\n')  # 换行符转义
-        content = content.replace('\r', '\\r')  # 回车符转义
-        
-        return f"{key}{content}{end}"
-    
-    # 修复所有content字段
-    replies_str = re.sub(content_pattern, fix_content, replies_str, flags=re.DOTALL)
-    
-    # 3. 修复其他JSON语法问题
-    # 确保属性名有双引号
-    pattern = r'([{,]\s*)([a-zA-Z0-9_]+)\s*:'
-    def add_quotes(match):
-        return f'{match.group(1)}"{match.group(2)}":'
-    replies_str = re.sub(pattern, add_quotes, replies_str)
-    
-    # 4. 修复Unicode编码
-    replies_str = replies_str.replace(r'\u003c', '<').replace(r'\u003e', '>')
-    
-    # 5. 移除控制字符和多余逗号
-    replies_str = re.sub(r'[\n\r\t]', '', replies_str)
-    replies_str = re.sub(r',\s*}', '}', replies_str)
-    replies_str = re.sub(r',\s*]', ']', replies_str)
-    
-    # 6. 确保JSON格式完整
-    if not replies_str.startswith('{'):
-        replies_str = '{' + replies_str
-    if not replies_str.endswith('}'):
-        replies_str = replies_str + '}'
-    
-    return replies_str
-
-def extract_and_parse_replies():
-    """核心提取解析函数"""
-    # 1. 获取HTML
+def extract_replies_with_strong_filter():
+    """使用强过滤提取并解析replies数据"""
+    # 1. 获取HTML内容
     html = run_curl_and_get_html()
     if not html:
-        print("❌ 获取HTML失败")
+        print("❌ 无法获取HTML内容")
         return
     
     # 2. 提取__NEXT_DATA__
     next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
     next_data_match = re.search(next_data_pattern, html, re.DOTALL)
     if not next_data_match:
-        print("❌ 未找到__NEXT_DATA__")
+        print("❌ 未找到__NEXT_DATA__标签")
         return
     
     next_data_str = next_data_match.group(1).strip()
@@ -131,63 +104,79 @@ def extract_and_parse_replies():
     # 3. 提取replies数据块
     replies_pattern = r'"replies"\s*:\s*({[^}]*?"count"\s*:\s*\d+[^}]*?"size"\s*:\s*\d+[^}]*?"current"\s*:\s*\d+[^}]*?"total"\s*:\s*\d+[^}]*?"list"\s*:\s*\[(.*?)\]\s*[^}]*})'
     replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
+    
     if not replies_match:
         print("❌ 未提取到replies数据块")
         return
     
-    replies_str = replies_match.group(1)
-    print(f"📌 原始replies数据（出错位置附近）：")
-    print(replies_str[150:170])  # 打印第161列附近的内容
+    # 4. 强过滤处理
+    raw_replies = replies_match.group(1)
+    print(f"📥 原始replies数据长度: {len(raw_replies)}")
     
-    # 4. 修复并解析JSON（关键修复）
-    fixed_replies_str = fix_special_char_json(replies_str)
+    # 应用超强过滤
+    filtered_replies = ultra_strong_filter(raw_replies)
+    print(f"🧹 强过滤后数据长度: {len(filtered_replies)}")
     
+    # 5. 解析处理后的JSON
     try:
-        # 解析修复后的JSON
-        replies_data = json.loads(fixed_replies_str)
+        replies_data = json.loads(filtered_replies)
         print("\n✅ JSON解析成功！")
         
         # 打印完整的replies数据
-        print("\n" + "="*50)
-        print("📋 完整的replies数据：")
-        print("="*50)
+        print("\n" + "="*60)
+        print("📋 强过滤后的完整replies数据：")
+        print("="*60)
         print(json.dumps(replies_data, ensure_ascii=False, indent=2))
         
-        # 提取list中的回复并打印
+        # 提取并打印所有回复
         reply_list = replies_data.get("list", [])
         print(f"\n📊 共提取到 {len(reply_list)} 条回复：")
         
         for i, reply in enumerate(reply_list):
             print(f"\n--- 回复 {i+1} ---")
             print(f"PID: {reply.get('pid', '未知')}")
+            print(f"作者ID: {reply.get('authorId', '未知')}")
             print(f"作者EUID: {reply.get('author', {}).get('euid', '未知')}")
-            print(f"作者名称: {reply.get('author', {}).get('puname', '未知')}")
-            print(f"时间: {reply.get('createdAtFormat', '未知')}")
-            print(f"内容: {clean_html_tags(reply.get('content', ''))}")
+            print(f"作者昵称: {reply.get('author', {}).get('puname', '未知')}")
+            print(f"发布时间: {reply.get('createdAtFormat', '未知')}")
+            print(f"纯文本内容: {reply.get('content', '无内容')}")
             
-            # 检查是否是目标EUID的回复
+            # 标记目标用户回复
             if reply.get('author', {}).get('euid', '') == TARGET_CONFIG['user_euid']:
-                print("🔹 👉 这是目标用户的回复！")
+                print("🔴 【目标用户回复】")
         
-        # 筛选目标EUID的回复
+        # 筛选目标用户回复
         target_replies = [
             r for r in reply_list 
             if r.get('author', {}).get('euid', '') == TARGET_CONFIG['user_euid']
         ]
         
-        print(f"\n🎯 找到 {len(target_replies)} 条目标EUID的回复")
+        print(f"\n" + "="*60)
+        print(f"🎯 目标EUID({TARGET_CONFIG['user_euid']})的回复: {len(target_replies)} 条")
+        print("="*60)
+        
+        if target_replies:
+            for i, reply in enumerate(target_replies):
+                print(f"\n目标回复 {i+1}:")
+                print(f"内容: {reply.get('content', '无')}")
+        else:
+            print("❌ 未找到目标用户的回复")
+        
+        # 保存结果
+        with open("filtered_replies_result.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "total_replies": len(reply_list),
+                "target_replies": target_replies,
+                "full_replies_data": replies_data
+            }, f, ensure_ascii=False, indent=2)
+        print("\n💾 结果已保存到 filtered_replies_result.json")
         
     except json.JSONDecodeError as e:
-        print(f"\n❌ JSON解析失败详情：")
-        print(f"  错误类型: {type(e).__name__}")
-        print(f"  错误位置: line {e.lineno}, column {e.colno} (char {e.pos})")
-        print(f"  错误信息: {e.msg}")
-        print(f"  出错位置内容: {fixed_replies_str[e.pos-10:e.pos+10]}")
-        
-        # 保存修复后的JSON用于调试
-        with open("fixed_replies_debug.json", "w", encoding="utf-8") as f:
-            f.write(fixed_replies_str)
-        print("\n📄 修复后的JSON已保存到 fixed_replies_debug.json")
+        print(f"\n❌ JSON解析失败: {e}")
+        # 保存过滤后的数据用于调试
+        with open("filtered_replies_debug.txt", "w", encoding="utf-8") as f:
+            f.write(filtered_replies)
+        print("📄 过滤后的数据已保存到 filtered_replies_debug.txt")
 
 if __name__ == "__main__":
-    extract_and_parse_replies()
+    extract_replies_with_strong_filter()
