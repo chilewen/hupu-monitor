@@ -28,19 +28,36 @@ CURL_TEMPLATE = '''curl 'https://bbs.hupu.com/{thread_id}_{euid}-{page_num}.html
 
 # ==================== 核心功能函数 ====================
 def load_push_state():
-    """加载推送状态（记录已推送的回复ID）"""
+    """加载推送状态（记录已推送的回复ID）- 增加容错处理"""
+    default_state = {
+        "pushed_pids": [],
+        "first_run": True,
+        "last_total_page": 0,
+        "last_check_time": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
     if os.path.exists(CONFIG["state_file"]):
         try:
             with open(CONFIG["state_file"], "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return {"pushed_pids": [], "first_run": True, "last_total_page": 0}
-    return {"pushed_pids": [], "first_run": True, "last_total_page": 0}
+                state = json.load(f)
+            # 补充缺失的字段
+            for key, value in default_state.items():
+                if key not in state:
+                    state[key] = value
+            return state
+        except Exception as e:
+            print(f"⚠️ 加载状态文件失败: {e}，使用默认状态")
+            return default_state
+    return default_state
 
 def save_push_state(state):
     """保存推送状态"""
-    with open(CONFIG["state_file"], "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    try:
+        state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(CONFIG["state_file"], "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 保存状态文件失败: {e}")
 
 def clean_content_for_json(content):
     """仅清理content字段，确保JSON可解析"""
@@ -170,10 +187,12 @@ def main():
     """主逻辑：首次取最后3条，非首次逐条推送未推送内容"""
     print("🚀 开始提取并推送回复数据...")
     
-    # 加载推送状态
+    # 加载推送状态（修复KeyError的核心）
     state = load_push_state()
-    first_run = state["first_run"]
-    pushed_pids = state["pushed_pids"]
+    # 安全获取字段，避免KeyError
+    first_run = state.get("first_run", True)
+    pushed_pids = state.get("pushed_pids", [])
+    last_total_page = state.get("last_total_page", 0)
     
     # 第一步：获取第一页数据，拿到总页数
     first_page_html = fetch_page_html(CONFIG["page_num"])
@@ -186,8 +205,8 @@ def main():
         print("❌ 无法提取replies数据")
         return
     
-    total_pages = first_replies["total"]
-    print(f"📊 数据概览：总页数={total_pages}, 当前页={first_replies['current']}, 总回复数={first_replies['count']}")
+    total_pages = first_replies.get("total", 0)
+    print(f"📊 数据概览：总页数={total_pages}, 当前页={first_replies.get('current', 0)}, 总回复数={first_replies.get('count', 0)}")
     
     # 第二步：处理首次运行逻辑（获取最后一页的最后3条）
     all_replies = []
@@ -195,17 +214,21 @@ def main():
         print("\n🔹 首次运行模式：获取最后一页的最后3条回复")
         
         # 获取最后一页数据
-        last_page_html = fetch_page_html(total_pages)
-        if last_page_html:
-            last_replies = extract_replies_data(last_page_html)
-            if last_replies and last_replies["list"]:
-                # 取最后3条
-                last_3_replies = last_replies["list"][-3:] if len(last_replies["list"]) >=3 else last_replies["list"]
-                
-                print(f"\n✅ 找到最后一页的{len(last_3_replies)}条回复，开始推送：")
-                for reply in reversed(last_3_replies):  # 倒序推送（最新的最后推）
-                    push_reply(reply)
-                    pushed_pids.append(reply.get("pid"))
+        if total_pages > 0:
+            last_page_html = fetch_page_html(total_pages)
+            if last_page_html:
+                last_replies = extract_replies_data(last_page_html)
+                if last_replies and last_replies.get("list", []):
+                    # 取最后3条
+                    reply_list = last_replies.get("list", [])
+                    last_3_replies = reply_list[-3:] if len(reply_list) >=3 else reply_list
+                    
+                    print(f"\n✅ 找到最后一页的{len(last_3_replies)}条回复，开始推送：")
+                    for reply in reversed(last_3_replies):  # 倒序推送（最新的最后推）
+                        push_reply(reply)
+                        pid = reply.get("pid")
+                        if pid and pid not in pushed_pids:
+                            pushed_pids.append(pid)
         
         # 更新状态：首次运行完成
         state["first_run"] = False
@@ -216,31 +239,34 @@ def main():
         print("\n🔹 常规运行模式：推送未推送的新回复")
         
         # 遍历所有页面（从最后记录的页数开始）
-        start_page = state["last_total_page"]
+        start_page = last_total_page
         new_replies = []
         
         # 先检查最后一页（最新回复）
-        for page in range(total_pages, max(0, start_page-2), -1):
-            page_html = fetch_page_html(page)
-            if not page_html:
-                continue
-            
-            page_replies = extract_replies_data(page_html)
-            if not page_replies or not page_replies["list"]:
-                continue
-            
-            # 筛选未推送的回复
-            for reply in page_replies["list"]:
-                pid = reply.get("pid")
-                if pid and pid not in pushed_pids:
-                    new_replies.append(reply)
+        if total_pages > 0:
+            for page in range(total_pages, max(0, start_page-2), -1):
+                page_html = fetch_page_html(page)
+                if not page_html:
+                    continue
+                
+                page_replies = extract_replies_data(page_html)
+                if not page_replies or not page_replies.get("list", []):
+                    continue
+                
+                # 筛选未推送的回复
+                for reply in page_replies.get("list", []):
+                    pid = reply.get("pid")
+                    if pid and pid not in pushed_pids:
+                        new_replies.append(reply)
         
         # 按时间正序推送（旧的先推）
         if new_replies:
             print(f"\n✅ 找到{len(new_replies)}条未推送的回复，开始逐条推送：")
             for reply in new_replies:
                 push_reply(reply)
-                pushed_pids.append(reply.get("pid"))
+                pid = reply.get("pid")
+                if pid and pid not in pushed_pids:
+                    pushed_pids.append(pid)
                 state["last_total_page"] = total_pages
         else:
             print("\n✅ 暂无新回复需要推送")
