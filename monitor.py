@@ -3,279 +3,216 @@ import re
 import subprocess
 import os
 import time
+import requests
+import sys
 
-# ==================== 配置项 ====================
+# ==================== 【核心配置：多帖子 + 多用户】 ====================
+MONITOR_TARGETS = [
+    {
+        "thread_id": "636748637",       # 帖子ID
+        "target_euid": "20829162237257", # 要监控的用户EUIN
+        "name": "赫萝Horoo"                  # 备注名（推送时显示）
+    },
+    {
+        "thread_id": "636748637",
+        "target_euid": "197319743786161",
+        "name": "二号机"
+    }
+]
+
+# 通用配置
 CONFIG = {
-    "thread_id": "636748637",
-    "target_euid": "20829162237257",
-    "page_num": 21,
-    "state_file": "reply_push_state.json"  # 记录推送状态的文件
+    "bark_key": os.environ.get("BARK_KEY", ""),
+    "state_file": "reply_push_state.json"
 }
 
-# CURL请求命令
-CURL_TEMPLATE = '''curl 'https://bbs.hupu.com/{thread_id}_{euid}-{page_num}.html' \
-  -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+# 请求头模板
+CURL_TEMPLATE = '''curl 'https://bbs.hupu.com/{thread_id}_{euid}-1.html' \
+  -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9' \
   -H 'accept-language: zh-CN,zh;q=0.9,en;q=0.8' \
-  -H 'sec-ch-ua: "Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"' \
+  -H 'sec-ch-ua: "Not:A-Brand";v="99","Google Chrome";v="145"' \
   -H 'sec-ch-ua-mobile: ?0' \
   -H 'sec-ch-ua-platform: "macOS"' \
   -H 'sec-fetch-dest: document' \
   -H 'sec-fetch-mode: navigate' \
   -H 'sec-fetch-site: same-origin' \
   -H 'upgrade-insecure-requests: 1' \
-  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36' \
+  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' \
   --silent --show-error'''
 
-# ==================== 核心功能函数 ====================
+# ==================== 状态管理 ====================
 def load_push_state():
-    """加载推送状态（记录已推送的回复ID）- 增加容错处理"""
     default_state = {
         "pushed_pids": [],
         "first_run": True,
-        "last_total_page": 0,
-        "last_check_time": time.strftime("%Y-%m-%d %H:%M:%S")
+        "last_check": {}
     }
-    
     if os.path.exists(CONFIG["state_file"]):
         try:
             with open(CONFIG["state_file"], "r", encoding="utf-8") as f:
                 state = json.load(f)
-            # 补充缺失的字段
-            for key, value in default_state.items():
-                if key not in state:
-                    state[key] = value
+            for k, v in default_state.items():
+                if k not in state:
+                    state[k] = v
             return state
-        except Exception as e:
-            print(f"⚠️ 加载状态文件失败: {e}，使用默认状态")
+        except:
             return default_state
     return default_state
 
 def save_push_state(state):
-    """保存推送状态"""
     try:
-        state["last_check_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(CONFIG["state_file"], "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"⚠️ 保存状态文件失败: {e}")
-
-def clean_content_for_json(content):
-    """仅清理content字段，确保JSON可解析"""
-    if not content:
-        return ""
-    
-    # 1. 移除HTML标签（包括Unicode编码）
-    content = re.sub(r'\\u003c[^\\]+\\u003e', '', content)  # \u003c/p\u003e 等
-    content = re.sub(r'<[^>]+>', '', content)  # <p>、<img>等标签
-    
-    # 2. 移除URL和特殊字符
-    content = re.sub(r'https?://[^"]+', '', content)  # 移除图片URL
-    content = content.replace('\\', '')  # 移除反斜杠
-    content = content.replace('"', '')   # 移除双引号（避免JSON解析错误）
-    
-    # 3. 清理空白字符
-    content = re.sub(r'\s+', ' ', content).strip()
-    
-    return content
-
-def extract_replies_data(html):
-    """精准提取props.pageProps.detail.replies数据"""
-    # 第一步：提取__NEXT_DATA__完整内容
-    next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
-    next_data_match = re.search(next_data_pattern, html, re.DOTALL)
-    
-    if not next_data_match:
-        return None
-    
-    next_data_str = next_data_match.group(1).strip()
-    
-    # 第二步：解析完整的NEXT_DATA（容错处理）
-    try:
-        next_data = json.loads(next_data_str)
-        # 精准定位到replies数据
-        replies_data = next_data.get("props", {}) \
-                               .get("pageProps", {}) \
-                               .get("detail", {}) \
-                               .get("replies", None)
-        return replies_data
     except:
-        # JSON解析失败时，用正则精准提取replies部分
-        replies_pattern = r'"replies"\s*:\s*({[^}]*?"count"\s*:\s*\d+[^}]*?"size"\s*:\s*\d+[^}]*?"current"\s*:\s*\d+[^}]*?"total"\s*:\s*\d+[^}]*?"list"\s*:\s*\[(.*?)\]\s*[^}]*})'
-        replies_match = re.search(replies_pattern, next_data_str, re.DOTALL)
-        
-        if not replies_match:
-            return None
-        
-        # 构建基础replies结构
-        replies_raw = replies_match.group(1)
-        replies_dict = {
-            "count": 0,
-            "size": 0,
-            "current": 0,
-            "total": 0,
-            "list": []
-        }
-        
-        # 提取基础信息
-        count_match = re.search(r'"count"\s*:\s*(\d+)', replies_raw)
-        size_match = re.search(r'"size"\s*:\s*(\d+)', replies_raw)
-        current_match = re.search(r'"current"\s*:\s*(\d+)', replies_raw)
-        total_match = re.search(r'"total"\s*:\s*(\d+)', replies_raw)
-        
-        if count_match: replies_dict["count"] = int(count_match.group(1))
-        if size_match: replies_dict["size"] = int(size_match.group(1))
-        if current_match: replies_dict["current"] = int(current_match.group(1))
-        if total_match: replies_dict["total"] = int(total_match.group(1))
-        
-        # 提取并处理list数据（核心：仅处理list部分）
-        list_pattern = r'"list"\s*:\s*\[(.*?)\]\s*[,}]'
-        list_match = re.search(list_pattern, replies_raw, re.DOTALL)
-        
-        if list_match:
-            list_str = list_match.group(1)
-            # 分割每条回复
-            reply_items = re.findall(r'\{[^}]*"pid"\s*:\s*"[^"]+"[^}]*\}', list_str)
-            
-            for item in reply_items:
-                reply = {}
-                # 提取核心字段
-                pid_match = re.search(r'"pid"\s*:\s*"([^"]+)"', item)
-                content_match = re.search(r'"content"\s*:\s*"([^"]+)"', item)
-                time_match = re.search(r'"createdAtFormat"\s*:\s*"([^"]+)"', item)
-                
-                if pid_match: reply["pid"] = pid_match.group(1)
-                if time_match: reply["createdAtFormat"] = time_match.group(1)
-                if content_match: 
-                    # 仅清理content字段，不影响其他内容
-                    reply["content"] = clean_content_for_json(content_match.group(1))
-                
-                replies_dict["list"].append(reply)
-        
-        return replies_dict
+        pass
 
-def fetch_page_html(page_num):
-    """获取指定页码的HTML内容"""
-    curl_cmd = CURL_TEMPLATE.format(
-        thread_id=CONFIG["thread_id"],
-        euid=CONFIG["target_euid"],
-        page_num=page_num
-    )
-    
+# ==================== 内容清理 ====================
+def clean_content(s):
+    if not s:
+        return ""
+    s = re.sub(r'\\u003c.*?\\u003e', '', s)
+    s = re.sub(r'<.*?>', '', s)
+    s = re.sub(r'https?://\S+', '', s)
+    s = s.replace('\\', '').replace('"', '').replace("'", "")
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+# ==================== 提取 replies ====================
+def extract_replies(html):
     try:
-        result = subprocess.run(
-            curl_cmd,
-            shell=True,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8"
-        )
-        return result.stdout
-    except Exception as e:
-        print(f"❌ 获取第{page_num}页失败: {e}")
+        match = re.search(r'<script id="__NEXT_DATA__".*?>(.*?)</script>', html, re.DOTALL)
+        if not match:
+            return None
+        data = json.loads(match.group(1))
+        return data["props"]["pageProps"]["detail"]["replies"]
+    except:
+        pass
+
+    match = re.search(r'"replies"\s*:\s*({.*?"list"\s*:\s*\[.*?\].*?})', html, re.DOTALL)
+    if not match:
         return None
 
-def push_reply(reply):
-    """推送单条回复（可自定义推送逻辑）"""
-    print(f"\n📤 推送回复 [{reply.get('pid', '未知')}]：")
-    print(f"   时间: {reply.get('createdAtFormat', '未知')}")
-    print(f"   内容: {reply.get('content', '无内容')}")
-    # 这里可以添加实际的推送逻辑（如发送到微信、钉钉等）
-    time.sleep(0.5)  # 模拟推送延迟
+    raw = match.group(1)
+    res = {
+        "current": 0,
+        "total": 0,
+        "list": []
+    }
+    cur = re.search(r'"current"\s*:\s*(\d+)', raw)
+    tot = re.search(r'"total"\s*:\s*(\d+)', raw)
+    if cur: res["current"] = int(cur.group(1))
+    if tot: res["total"] = int(tot.group(1))
 
-def main():
-    """主逻辑：首次取最后3条，非首次逐条推送未推送内容"""
-    print("🚀 开始提取并推送回复数据...")
-    
-    # 加载推送状态（修复KeyError的核心）
-    state = load_push_state()
-    # 安全获取字段，避免KeyError
-    first_run = state.get("first_run", True)
-    pushed_pids = state.get("pushed_pids", [])
-    last_total_page = state.get("last_total_page", 0)
-    
-    # 第一步：获取第一页数据，拿到总页数
-    first_page_html = fetch_page_html(CONFIG["page_num"])
-    if not first_page_html:
-        print("❌ 无法获取初始页面数据")
+    items = re.findall(r'\{.*?"pid"\s*:\s*"[^"]+".*?\}', raw)
+    for it in items:
+        pid = re.search(r'"pid"\s*:\s*"([^"]+)"', it)
+        ct = re.search(r'"content"\s*:\s*"([^"]+)"', it)
+        tm = re.search(r'"createdAtFormat"\s*:\s*"([^"]+)"', it)
+        res["list"].append({
+            "pid": pid.group(1) if pid else "",
+            "content": clean_content(ct.group(1)) if ct else "",
+            "createdAtFormat": tm.group(1) if tm else ""
+        })
+    return res
+
+# ==================== Bark 推送 ====================
+def push_bark(title, body):
+    key = CONFIG["bark_key"]
+    if not key:
+        print("⚠️ 未配置 BARK_KEY")
         return
-    
-    first_replies = extract_replies_data(first_page_html)
-    if not first_replies:
-        print("❌ 无法提取replies数据")
+    try:
+        t = requests.utils.quote(title)
+        b = requests.utils.quote(body)
+        u = f"https://api.day.app/{key}/{t}/{b}"
+        requests.get(u, timeout=5)
+        print("✅ Bark 推送成功")
+    except:
+        print("❌ Bark 推送失败")
+
+# ==================== 监控单个目标 ====================
+def monitor_one(target, state):
+    thread_id = target["thread_id"]
+    euid = target["target_euid"]
+    name = target["name"]
+    key = f"{thread_id}_{euid}"
+
+    print(f"\n==================================================")
+    print(f"📌 正在监控：{name} | 帖子 {thread_id} | 用户 {euid}")
+
+    # 获取首页（拿总页数）
+    cmd = CURL_TEMPLATE.format(thread_id=thread_id, euid=euid)
+    html = subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout
+    if not html:
+        print("❌ 获取页面失败")
         return
-    
-    total_pages = first_replies.get("total", 0)
-    print(f"📊 数据概览：总页数={total_pages}, 当前页={first_replies.get('current', 0)}, 总回复数={first_replies.get('count', 0)}")
-    
-    # 第二步：处理首次运行逻辑（获取最后一页的最后3条）
-    all_replies = []
-    if first_run:
-        print("\n🔹 首次运行模式：获取最后一页的最后3条回复")
-        
-        # 获取最后一页数据
-        if total_pages > 0:
-            last_page_html = fetch_page_html(total_pages)
-            if last_page_html:
-                last_replies = extract_replies_data(last_page_html)
-                if last_replies and last_replies.get("list", []):
-                    # 取最后3条
-                    reply_list = last_replies.get("list", [])
-                    last_3_replies = reply_list[-3:] if len(reply_list) >=3 else reply_list
-                    
-                    print(f"\n✅ 找到最后一页的{len(last_3_replies)}条回复，开始推送：")
-                    for reply in reversed(last_3_replies):  # 倒序推送（最新的最后推）
-                        push_reply(reply)
-                        pid = reply.get("pid")
-                        if pid and pid not in pushed_pids:
-                            pushed_pids.append(pid)
-        
-        # 更新状态：首次运行完成
-        state["first_run"] = False
-        state["last_total_page"] = total_pages
-    
-    # 第三步：非首次运行，逐条推送未推送内容
+
+    rep = extract_replies(html)
+    if not rep:
+        print("❌ 未获取到 replies")
+        return
+
+    total = rep.get("total", 0)
+    print(f"📊 总页数：{total}")
+
+    # 首次运行：取最后一页最后3条
+    if state.get("first_run", True):
+        if total <= 0:
+            return
+        cmd_last = CURL_TEMPLATE.format(thread_id=thread_id, euid=euid).replace("-1.html", f"-{total}.html")
+        html_last = subprocess.run(cmd_last, shell=True, capture_output=True, text=True).stdout
+        rep_last = extract_replies(html_last)
+        if rep_last and rep_last.get("list"):
+            lst = rep_last["list"]
+            take = lst[-3:] if len(lst) >=3 else lst
+            for item in reversed(take):
+                pid = item.get("pid")
+                if not pid:
+                    continue
+                title = f"【{name}】新回复"
+                body = f"{item.get('createdAtFormat')}\n{item.get('content')}"
+                print(f"\n📤 首次推送：{body}")
+                push_bark(title, body)
+                state["pushed_pids"].append(pid)
+        return
+
+    # 非首次：检查最新页，只推新的
+    check_pages = list(range(total, max(0, total-2), -1))
+    new_items = []
+    for p in check_pages:
+        cmd_p = CURL_TEMPLATE.format(thread_id=thread_id, euid=euid).replace("-1.html", f"-{p}.html")
+        html_p = subprocess.run(cmd_p, shell=True, capture_output=True, text=True).stdout
+        rp = extract_replies(html_p)
+        if not rp or not rp.get("list"):
+            continue
+        for it in rp["list"]:
+            pid = it.get("pid")
+            if pid and pid not in state["pushed_pids"]:
+                new_items.append(it)
+
+    if new_items:
+        print(f"✅ 发现 {len(new_items)} 条新回复")
+        for it in new_items:
+            title = f"【{name}】新回复"
+            body = f"{it.get('createdAtFormat')}\n{it.get('content')}"
+            print(f"\n📤 {body}")
+            push_bark(title, body)
+            state["pushed_pids"].append(it.get("pid"))
     else:
-        print("\n🔹 常规运行模式：推送未推送的新回复")
-        
-        # 遍历所有页面（从最后记录的页数开始）
-        start_page = last_total_page
-        new_replies = []
-        
-        # 先检查最后一页（最新回复）
-        if total_pages > 0:
-            for page in range(total_pages, max(0, start_page-2), -1):
-                page_html = fetch_page_html(page)
-                if not page_html:
-                    continue
-                
-                page_replies = extract_replies_data(page_html)
-                if not page_replies or not page_replies.get("list", []):
-                    continue
-                
-                # 筛选未推送的回复
-                for reply in page_replies.get("list", []):
-                    pid = reply.get("pid")
-                    if pid and pid not in pushed_pids:
-                        new_replies.append(reply)
-        
-        # 按时间正序推送（旧的先推）
-        if new_replies:
-            print(f"\n✅ 找到{len(new_replies)}条未推送的回复，开始逐条推送：")
-            for reply in new_replies:
-                push_reply(reply)
-                pid = reply.get("pid")
-                if pid and pid not in pushed_pids:
-                    pushed_pids.append(pid)
-                state["last_total_page"] = total_pages
-        else:
-            print("\n✅ 暂无新回复需要推送")
-    
-    # 保存最新状态
-    state["pushed_pids"] = list(set(pushed_pids))  # 去重
+        print("✅ 暂无新回复")
+
+# ==================== 主入口 ====================
+def main():
+    print("🚀 多帖子多用户监控启动")
+    state = load_push_state()
+
+    for target in MONITOR_TARGETS:
+        monitor_one(target, state)
+
+    state["pushed_pids"] = list(set(state["pushed_pids"]))
+    state["first_run"] = False
     save_push_state(state)
-    
-    print(f"\n🎉 任务完成！累计推送{len(pushed_pids)}条回复")
+    print(f"\n🎉 全部监控完成，已推送 {len(state['pushed_pids'])} 条")
 
 if __name__ == "__main__":
     main()
