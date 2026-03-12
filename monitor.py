@@ -73,12 +73,6 @@ def run_curl_and_get_html():
             f.write(full_html)
         print(f"\n✅ HTML已保存到：{save_path}")
         
-        # 全量打印（可选，注释掉避免输出过长）
-        # print(f"\n=====================================")
-        # print(f"📄 全量HTML内容：")
-        # print(f"=====================================\n")
-        # print(full_html)
-        
         return full_html
     except subprocess.CalledProcessError as e:
         print(f"❌ curl执行失败：{e.stderr}")
@@ -88,94 +82,133 @@ def run_curl_and_get_html():
         return None
 
 def extract_replies_from_html(html):
-    """从HTML中提取replies数据（核心）"""
+    """从HTML中提取__NEXT_DATA__中的replies数据（核心）"""
     if not html:
         print(f"❌ 无HTML内容可解析")
         return None
     
     print(f"\n=====================================")
-    print(f"🔍 提取replies数据：")
+    print(f"🔍 提取__NEXT_DATA__中的replies数据：")
     print(f"=====================================")
     
-    # 第一步：搜索所有包含replies的JSON片段
-    # 匹配任意包含replies的大JSON块（虎扑的核心数据）
-    json_patterns = [
-        r'window\.bbs_thread_info\s*=\s*({.*?});',  # 主数据
-        r'var\s+threadData\s*=\s*({.*?});',         # 备选1
-        r'{"replies":{.*?}}',                       # 备选2
-        r'{"count":\d+,"size":\d+,"current":\d+,"total":\d+,"list":\[.*?\]}'  # 备选3
-    ]
+    # 匹配<script id="__NEXT_DATA__" type="application/json">标签内的内容
+    next_data_pattern = r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>'
+    match = re.search(next_data_pattern, html, re.DOTALL)
     
-    replies_data = None
-    for pattern in json_patterns:
-        match = re.search(pattern, html, re.DOTALL)
-        if match:
-            try:
-                json_str = match.group(1)
-                # 修复JSON格式（处理转义问题）
-                json_str = json_str.replace(r'\\"', '"').replace(r'\\/', '/')
-                data = json.loads(json_str)
-                
-                # 查找replies字段
-                if "replies" in data:
-                    replies_data = data["replies"]
-                    break
-                elif "list" in data and "count" in data:
-                    replies_data = data
-                    break
-            except json.JSONDecodeError as e:
-                print(f"⚠️ 解析JSON失败（{pattern}）：{str(e)}")
-                continue
-    
-    if not replies_data:
-        print(f"❌ 未找到replies数据")
+    if not match:
+        print(f"❌ 未找到__NEXT_DATA__脚本标签")
         # 打印关键片段辅助排查
-        print(f"\n📌 关键片段（前2000字符）：")
-        print(html[:2000])
+        print(f"\n📌 搜索__NEXT_DATA__相关片段：")
+        # 搜索包含__NEXT_DATA__的行
+        lines = html.split("\n")
+        for idx, line in enumerate(lines[:100]):  # 只看前100行
+            if "__NEXT_DATA__" in line:
+                print(f"行{idx+1}：{line.strip()}")
         return None
     
-    # 第二步：解析replies数据
-    print(f"✅ 成功提取replies数据：")
-    print(f"- count: {replies_data.get('count', '未知')}")
-    print(f"- current: {replies_data.get('current', '未知')}")
-    print(f"- total: {replies_data.get('total', '未知')}")
-    print(f"- list长度: {len(replies_data.get('list', []))}")
-    
-    # 第三步：筛选目标euid的回复
-    target_euid = TARGET_CONFIG["user_euid"]
-    reply_list = replies_data.get("list", [])
-    target_replies = []
-    
-    for reply in reply_list:
+    try:
+        # 获取JSON字符串并清理
+        json_str = match.group(1).strip()
+        # 修复可能的转义问题
+        json_str = json_str.replace(r'\u003c', '<').replace(r'\u003e', '>').replace(r'\\', '\\')
+        
+        # 解析JSON数据
+        next_data = json.loads(json_str)
+        
+        # 按路径提取replies数据：props.pageProps.detail.replies
         try:
-            # 提取author中的euid
-            author = reply.get("author", {})
-            euid = author.get("euid", "")
-            if euid == target_euid:
-                # 清理内容
-                content = reply.get("content", "")
-                content = re.sub(r'<.*?>', '', content)  # 移除HTML标签
-                
-                target_replies.append({
-                    "pid": reply.get("pid", ""),
-                    "euid": euid,
-                    "username": author.get("puname", ""),
-                    "time": reply.get("createdAtFormat", ""),
-                    "content": content.strip()
-                })
+            # 逐层获取，避免KeyError
+            props = next_data.get("props", {})
+            page_props = props.get("pageProps", {})
+            detail = page_props.get("detail", {})
+            replies_data = detail.get("replies", {})
+            
+            if not replies_data:
+                print(f"❌ 在__NEXT_DATA__中未找到props.pageProps.detail.replies")
+                print(f"📌 detail内容：{json.dumps(detail, ensure_ascii=False, indent=2)[:500]}...")
+                return None
+            
+            # 打印replies基础信息
+            print(f"✅ 成功提取replies数据：")
+            print(f"- count: {replies_data.get('count', '未知')}")
+            print(f"- size: {replies_data.get('size', '未知')}")
+            print(f"- current: {replies_data.get('current', '未知')}")
+            print(f"- total: {replies_data.get('total', '未知')}")
+            print(f"- list长度: {len(replies_data.get('list', []))}")
+            
+            # 筛选目标euid的回复（包括主回复和引用回复中的目标euid）
+            target_euid = TARGET_CONFIG["user_euid"]
+            reply_list = replies_data.get("list", [])
+            target_replies = []
+            
+            for reply in reply_list:
+                try:
+                    # 检查主回复作者的euid
+                    main_author = reply.get("author", {})
+                    main_euid = main_author.get("euid", "")
+                    
+                    # 检查引用回复作者的euid
+                    quote_author = reply.get("quote", {}).get("author", {})
+                    quote_euid = quote_author.get("euid", "")
+                    
+                    # 收集目标euid的回复（主回复或引用回复匹配都算）
+                    matched_author = None
+                    if main_euid == target_euid:
+                        matched_author = main_author
+                        content = reply.get("content", "")
+                        reply_type = "主回复"
+                    elif quote_euid == target_euid:
+                        matched_author = quote_author
+                        content = reply.get("quote", {}).get("content", "")
+                        reply_type = "引用回复"
+                    else:
+                        continue
+                    
+                    # 清理HTML标签
+                    content = re.sub(r'<.*?>', '', content)
+                    # 处理Unicode转义
+                    content = content.encode('utf-8').decode('unicode_escape')
+                    
+                    target_replies.append({
+                        "pid": reply.get("pid", ""),
+                        "euid": target_euid,
+                        "username": matched_author.get("puname", ""),
+                        "time": reply.get("createdAtFormat", "") or reply.get("quote", {}).get("createdAtFormat", ""),
+                        "content": content.strip(),
+                        "reply_type": reply_type,
+                        "location": reply.get("location", "")
+                    })
+                except Exception as e:
+                    print(f"⚠️ 解析单条回复失败：{str(e)}")
+                    continue
+            
+            print(f"\n🎯 匹配到目标euid({target_euid})的回复数：{len(target_replies)}")
+            for idx, reply in enumerate(target_replies):
+                print(f"\n--- 回复 {idx+1} ({reply['reply_type']}) ---")
+                print(f"PID: {reply['pid']}")
+                print(f"用户: {reply['username']} ({reply['euid']})")
+                print(f"时间: {reply['time']}")
+                print(f"位置: {reply['location']}")
+                print(f"内容: {reply['content'][:200]}..." if len(reply['content']) > 200 else reply['content'])
+            
+            # 保存提取的目标回复到JSON文件
+            with open("target_replies.json", "w", encoding="utf-8") as f:
+                json.dump(target_replies, f, ensure_ascii=False, indent=2)
+            print(f"\n✅ 目标回复已保存到：target_replies.json")
+            
+            return target_replies
+            
         except Exception as e:
-            print(f"⚠️ 解析单条回复失败：{str(e)}")
-            continue
-    
-    print(f"\n🎯 匹配到目标euid({target_euid})的回复数：{len(target_replies)}")
-    for idx, reply in enumerate(target_replies):
-        print(f"\n--- 回复 {idx+1} ---")
-        print(f"PID: {reply['pid']}")
-        print(f"用户: {reply['username']} ({reply['euid']})")
-        print(f"时间: {reply['time']}")
-        print(f"内容: {reply['content'][:200]}..." if len(reply['content']) > 200 else reply['content'])
-    
-    return target_replies
+            print(f"❌ 提取replies路径失败：{str(e)}")
+            # 打印完整的__NEXT_DATA__结构（前1000字符）
+            print(f"\n📌 __NEXT_DATA__结构预览：")
+            print(json.dumps(next_data, ensure_ascii=False, indent=2)[:1000] + "...")
+            return None
+            
+    except json.JSONDecodeError as e:
+        print(f"❌ 解析__NEXT_DATA__ JSON失败：{str(e)}")
+        print(f"📌 原始JSON字符串前500字符：{json_str[:500]}...")
+        return None
 
 # ==================== 主函数 ====================
 def main():
