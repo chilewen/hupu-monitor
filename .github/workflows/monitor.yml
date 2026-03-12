@@ -1,25 +1,23 @@
 name: 虎扑监控-2分钟自动循环
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
   repository_dispatch:
-    types: [trigger_hupu]  # API触发标识（虎扑专属）
+    types: [trigger_hupu]
 
 jobs:
   run-hupu-monitor:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # 提交元数据文件
-      actions: write           # 触发下一次运行
-      repository-projects: write  # 补充权限
+      contents: write
+      actions: write
+      repository-projects: write
     steps:
-      # 1. 拉取代码
       - name: 拉取仓库代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: main
 
-      # 2. 配置Git（可选，如需提交文件则保留）
       - name: 配置Git环境
         run: |
           git config --global user.name "GitHub Actions"
@@ -27,24 +25,26 @@ jobs:
           git checkout main
           git pull origin main --allow-unrelated-histories
 
-      # 3. 设置Python环境
       - name: 安装Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"  # 与脚本兼容的版本
+          python-version: "3.10"
 
-      # 4. 安装所需依赖
       - name: 安装所需依赖
         run: pip install requests
 
-      # 5. 恢复推送记录缓存（关键：保留已推送ID和首次运行时间）
+      # 修复缓存：增加缓存版本号 + 扩大缓存范围
       - name: 恢复虎扑监控缓存
         uses: actions/cache/restore@v4
         with:
-          path: /tmp/hupu_monitor_cache.json
-          key: hupu-monitor-cache
+          path: |
+            /tmp/hupu_monitor_cache.json
+            ./hupu_monitor_cache.json
+          key: hupu-monitor-cache-v2-${{ github.run_id }}
+          restore-keys: |
+            hupu-monitor-cache-v2-
+            hupu-monitor-cache-
 
-      # 6. 运行虎扑监控脚本
       - name: 执行监控脚本
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
@@ -52,20 +52,20 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: python monitor.py
 
-      # 7. 保存推送记录缓存（确保状态不丢失）
+      # 强制保存缓存（无论是否命中）
       - name: 保存虎扑监控缓存
         uses: actions/cache/save@v4
         with:
-          path: /tmp/hupu_monitor_cache.json
-          key: hupu-monitor-cache
-        if: always()  # 即使脚本失败也保存缓存
+          path: |
+            /tmp/hupu_monitor_cache.json
+            ./hupu_monitor_cache.json
+          key: hupu-monitor-cache-v2-${{ github.run_id }}
+        if: always()
 
-      # 8. 等待2分钟（120秒）
       - name: 等待2分钟
         run: sleep 120
-        if: always()  # 即使脚本失败也继续
+        if: always()
 
-      # 9. 触发下一次运行（实现无限循环）
       - name: 触发下一次workflow
         run: |
           curl -X POST \
@@ -77,5 +77,5 @@ jobs:
               "event_type": "trigger_hupu",
               "client_payload": {"ref": "main"}
             }'
-        if: always()  # 确保循环不中断
-        continue-on-error: true  # 允许失败（避免整个流程中断）
+        if: always()
+        continue-on-error: true
