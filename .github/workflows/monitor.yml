@@ -1,6 +1,10 @@
 name: 虎扑监控-2分钟自动循环
+
 on:
+  # 手动触发（调试用）
   workflow_dispatch:
+  
+  # 云服务器触发
   repository_dispatch:
     types: [trigger_hupu]
 
@@ -11,6 +15,7 @@ jobs:
       contents: write
       actions: write
       repository-projects: write
+    
     steps:
       - name: 拉取仓库代码
         uses: actions/checkout@v4
@@ -33,7 +38,7 @@ jobs:
       - name: 安装所需依赖
         run: pip install requests
 
-      # 修复缓存：增加缓存版本号 + 扩大缓存范围
+      # 恢复缓存
       - name: 恢复虎扑监控缓存
         uses: actions/cache/restore@v4
         with:
@@ -52,7 +57,7 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: python monitor.py
 
-      # 强制保存缓存（无论是否命中）
+      # 保存缓存
       - name: 保存虎扑监控缓存
         uses: actions/cache/save@v4
         with:
@@ -61,21 +66,3 @@ jobs:
             ./hupu_monitor_cache.json
           key: hupu-monitor-cache-v2-${{ github.run_id }}
         if: always()
-
-      - name: 等待2分钟
-        run: sleep 120
-        if: always()
-
-      - name: 触发下一次workflow
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/${{ github.repository }}/dispatches \
-            -d '{
-              "event_type": "trigger_hupu",
-              "client_payload": {"ref": "main"}
-            }'
-        if: always()
-        continue-on-error: true
