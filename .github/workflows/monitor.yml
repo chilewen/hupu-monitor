@@ -1,16 +1,21 @@
-name: 虎扑监控-2分钟自动循环
+name: 虎扑监控-服务器定时触发
 
 on:
   # 手动触发（调试用）
   workflow_dispatch:
+  
+  # 服务器触发（唯一触发方式）
+  repository_dispatch:
+    types: [trigger_hupu]
 
 jobs:
   run-hupu-monitor:
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # 超时限制，防止卡住
+    
     permissions:
       contents: write
       actions: write
-      repository-projects: write
     
     steps:
       - name: 拉取仓库代码
@@ -23,27 +28,24 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git checkout main
-          git pull origin main --allow-unrelated-histories
 
       - name: 安装Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: 安装所需依赖
+      - name: 安装依赖
         run: pip install requests
 
-      # 恢复缓存
-      - name: 恢复虎扑监控缓存
+      - name: 恢复缓存
         uses: actions/cache/restore@v4
         with:
           path: |
             /tmp/hupu_monitor_cache.json
             ./hupu_monitor_cache.json
-          key: hupu-monitor-cache-v2-${{ github.run_id }}
+          key: hupu-monitor-cache-v3-${{ github.run_id }}
           restore-keys: |
-            hupu-monitor-cache-v2-
+            hupu-monitor-cache-v3-
             hupu-monitor-cache-
 
       - name: 执行监控脚本
@@ -53,13 +55,11 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: python monitor.py
 
-      # 保存缓存
-      - name: 保存虎扑监控缓存
+      - name: 保存缓存
         uses: actions/cache/save@v4
         with:
           path: |
             /tmp/hupu_monitor_cache.json
             ./hupu_monitor_cache.json
-          key: hupu-monitor-cache-v2-${{ github.run_id }}
+          key: hupu-monitor-cache-v3-${{ github.run_id }}
         if: always()
-
